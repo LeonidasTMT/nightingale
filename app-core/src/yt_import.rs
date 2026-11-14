@@ -19,7 +19,10 @@ use ts_rs::TS;
 
 use crate::{
     config::{AppConfig, LibrarySource},
+    library_db::load_all_songs,
+    lyrics::provide_lrc,
     scanner::start_scan,
+    song::Song,
     vendor::{ffmpeg_path, python_path, silent_command, uv_path},
 };
 
@@ -542,6 +545,16 @@ fn import_youtube_impl(
         .arg("mp3")
         .arg("-o")
         .arg(format!("{}/%(title)s [%(id)s].%(ext)s", root.display()))
+        // Embed ID3 tags (title/artist from the video metadata) and the
+        // thumbnail as cover art so the scanner fills in album art too.
+        .arg("--embed-metadata")
+        .arg("--embed-thumbnail")
+        // Subtitles become lyrics: manual subs if present, else auto-captions,
+        // converted to SRT which we turn into an LRC sidecar post-download.
+        .arg("--write-subs")
+        .arg("--write-auto-subs")
+        .arg("--convert-subs")
+        .arg("srt")
         .arg("--progress")
         .arg("--no-warnings");
 
@@ -578,9 +591,236 @@ fn import_youtube_impl(
     if let Ok(path) = &result {
         remove_intermediate_audio(path);
         start_scan();
+        // Subtitle -> LRC handoff runs off the import thread so this command
+        // returns promptly; it waits for the scanner's row on its own.
+        let path = path.clone();
+        std::thread::spawn(move || attach_subtitles_as_lyrics(&path));
     }
 
     result
+}
+
+/// Turn the subtitle sidecar yt-dlp wrote into an LRC file next to the song,
+/// then hand it to the lyrics pipeline: the transcript is built straight from
+/// the captions (no AI transcription) and a stems-only analysis pass is queued,
+/// so the import is karaoke-ready as soon as separation finishes.
+fn attach_subtitles_as_lyrics(mp3_path: &Path) {
+    let Some(srt_path) = find_subs_sidecar(mp3_path) else {
+        return;
+    };
+
+    let Ok(srt_text) = std::fs::read_to_string(&srt_path) else {
+        warn!("[yt-import] could not read subtitles: {}", srt_path.display());
+        return;
+    };
+
+    let Some(lrc_text) = srt_to_lrc(&srt_text) else {
+        let _ = std::fs::remove_file(&srt_path);
+        warn!("[yt-import] subtitles contained no usable lines; skipped lyrics");
+        return;
+    };
+
+    // Sidecar next to the song: the editable source of truth for the lyrics UI.
+    if let (Some(parent), Some(stem)) = (mp3_path.parent(), mp3_path.file_stem()) {
+        let lrc_path = parent.join(format!("{}.lrc", stem.to_string_lossy()));
+        if std::fs::write(&lrc_path, &lrc_text).is_ok() {
+            let _ = std::fs::remove_file(&srt_path);
+        }
+    }
+
+    let Some(song) = wait_for_song(mp3_path) else {
+        warn!("[yt-import] song never appeared in the library; lyrics not attached");
+        return;
+    };
+
+    if song.is_analyzed {
+        // Re-import of an already-analyzed song: keep the existing transcript and
+        // stems, the sidecar .lrc stays available for editing.
+        return;
+    }
+
+    match provide_lrc(&song.file_hash, &lrc_text, true) {
+        Ok(()) => tracing::info!("[yt-import] lyrics attached from captions: {}", mp3_path.display()),
+        Err(e) => warn!("[yt-import] lyrics handoff failed for {}: {e}", mp3_path.display()),
+    }
+}
+
+/// The SRT yt-dlp wrote next to the audio file (`<stem>.<lang>.srt`).
+fn find_subs_sidecar(mp3_path: &Path) -> Option<PathBuf> {
+    let (Some(parent), Some(stem)) = (mp3_path.parent(), mp3_path.file_stem()) else {
+        return None;
+    };
+    let stem = stem.to_string_lossy();
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(parent)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("srt")) {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy();
+            // `<stem>.<lang>.srt` -- must be longer than the stem plus ".".
+            if name.starts_with(&stem[..]) && name.len() > stem.len() + 1 {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+/// Poll the library until the scanner registers `mp3_path` (scan runs on its
+/// own thread). Canonicalize both sides so Windows `\\?\` prefixes can't
+/// break the comparison.
+fn wait_for_song(mp3_path: &Path) -> Option<Song> {
+    let canonical = std::fs::canonicalize(mp3_path).unwrap_or_else(|_| mp3_path.to_path_buf());
+    for _ in 0..120 {
+        if let Ok(songs) = load_all_songs() {
+            if let Some(song) = songs
+                .into_iter()
+                .find(|s| path_matches(&s.path, &canonical))
+            {
+                return Some(song);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    None
+}
+
+fn path_matches(a: &Path, b: &Path) -> bool {
+    let a = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let b = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    a == b
+}
+
+/// Convert an SRT sidecar into plain LRC. YouTube caption tracks repeat the
+/// tail of each cue at the start of the next one, so consecutive duplicate
+/// lines are dropped and empty cues skipped.
+fn srt_to_lrc(srt_text: &str) -> Option<String> {
+    let lines: Vec<&str> = srt_text.lines().collect();
+    let mut out = String::new();
+    let mut line_count = 0usize;
+    let mut last_emitted: Option<String> = None;
+    let mut last_ts_ms: i64 = -1;
+    // Start of the cue currently being consumed, if any.
+    let mut cue_start_ms: Option<i64> = None;
+
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if let Some(start) = parse_srt_time_range(line).map(|(s, _)| s) {
+            cue_start_ms = Some(start);
+            i += 1;
+            continue;
+        }
+        if line.is_empty() {
+            // A blank right after the range (before the text) keeps the cue
+            // open; a blank before the next index/range closes it.
+            let mut peek = i + 1;
+            while peek < lines.len() && lines[peek].trim().is_empty() {
+                peek += 1;
+            }
+            if peek >= lines.len()
+                || lines[peek].trim().parse::<u32>().is_ok()
+                || parse_srt_time_range(lines[peek].trim()).is_some()
+            {
+                cue_start_ms = None;
+            }
+            i += 1;
+            continue;
+        }
+        if line.parse::<u32>().is_ok() && cue_start_ms.is_none() {
+            i += 1; // cue index outside any open cue
+            continue;
+        }
+        if let Some(start) = cue_start_ms {
+            let text = clean_subtitle_text(line);
+            if !text.is_empty() && Some(&text) != last_emitted.as_ref() {
+                let ts_ms = if start == last_ts_ms { last_ts_ms + 10 } else { start };
+                out.push_str(&format_lrc_timestamp(ts_ms));
+                out.push(' ');
+                out.push_str(&text);
+                out.push('\n');
+                line_count += 1;
+                last_emitted = Some(text);
+                last_ts_ms = ts_ms;
+            }
+        }
+        i += 1;
+    }
+
+    if line_count >= 2 { Some(out) } else { None }
+}
+
+/// Parse `HH:MM:SS,mmm --> HH:MM:SS,mmm`, returning start/end in ms.
+fn parse_srt_time_range(line: &str) -> Option<(i64, i64)> {
+    let (left, right) = line.split_once("-->")?;
+    match (parse_srt_timestamp(left), parse_srt_timestamp(right)) {
+        (Some(start), Some(end)) => Some((start, end)),
+        _ => None,
+    }
+}
+
+fn parse_srt_timestamp(stamp: &str) -> Option<i64> {
+    let stamp = stamp.trim();
+    let (hms, frac) = match stamp.rfind([',', '.']) {
+        Some(sep) => stamp.split_at(sep),
+        None => (stamp, ""),
+    };
+    let mut parts = hms.split(':');
+    let h = parts.next()?.trim().parse::<i64>().ok()?;
+    let m = parts.next()?.trim().parse::<i64>().ok()?;
+    let s = parts.next()?.trim().parse::<i64>().ok()?;
+    let digits = frac.trim().chars().filter(|c| c.is_ascii_digit()).take(3);
+    let mut ms: i64 = 0;
+    for (idx, d) in digits.enumerate() {
+        ms = ms * 10 + d.to_digit(10)? as i64;
+        if idx == 2 { break; }
+    }
+    // Pad short fractions: "9" meant 900ms, "96" meant 960ms.
+    let len = frac.trim().chars().filter(|c| c.is_ascii_digit()).count().min(3);
+    for _ in 0..(3 - len) {
+        ms *= 10;
+    }
+    Some(((h * 60 + m) * 60 + s) * 1000 + ms)
+}
+
+/// Strip HTML tags/entities YouTube puts in caption lines and collapse runs of
+/// whitespace.
+fn clean_subtitle_text(line: &str) -> String {
+    let mut without_tags = String::new();
+    let mut in_tag = false;
+    for ch in line.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => without_tags.push(ch),
+            _ => {}
+        }
+    }
+    let unescaped = without_tags
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    unescaped
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_lrc_timestamp(ms: i64) -> String {
+    let ms = ms.max(0);
+    let min = ms / 60_000;
+    let sec = (ms % 60_000) / 1000;
+    let cs = (ms % 1000) / 10;
+    format!("[{min:02}:{sec:02}.{cs:02}]")
 }
 
 /// yt-dlp usually deletes the intermediate audio file after conversion, but on
@@ -740,4 +980,90 @@ fn mtime(path: &Path) -> std::time::SystemTime {
 fn extract_video_id(url: &str) -> Option<String> {
     let after = url.split("v=").nth(1)?;
     Some(after.split(&['&', '?'][..]).next()?.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_SRT: &str = "\
+1
+00:00:09,960 --> 00:00:14,030
+
+Oh-ban, Gangnam Style,
+
+2
+00:00:14,030 --> 00:00:14,040
+
+
+ 
+3
+00:00:14,040 --> 00:00:18,670
+
+Gangnam Style. A
+
+4
+00:00:18,670 --> 00:00:18,680
+
+
+ 
+5
+00:00:18,680 --> 00:00:22,670
+
+humane woman who comes separately during the day, a
+
+6
+00:00:22,670 --> 00:00:22,680
+humane woman who comes separately during the day, a
+ 
+7
+00:00:22,680 --> 00:00:25,710
+humane woman who comes separately during the day, a
+woman of class who knows the leisure of a cup of coffee, a woman whose
+
+8
+00:00:25,710 --> 00:00:25,720
+woman of class who knows the leisure of a cup of coffee, a woman whose
+";
+
+    #[test]
+    fn srt_to_lrc_dedupes_rolling_captions() {
+        let lrc = srt_to_lrc(SAMPLE_SRT).expect("should produce lines");
+        assert_eq!(
+            lrc,
+            "[00:09.96] Oh-ban, Gangnam Style,\n\
+             [00:14.04] Gangnam Style. A\n\
+             [00:18.68] humane woman who comes separately during the day, a\n\
+             [00:22.68] woman of class who knows the leisure of a cup of coffee, a woman whose\n"
+        );
+    }
+
+    #[test]
+    fn srt_to_lrc_rejects_empty_input() {
+        assert!(srt_to_lrc("1\n00:00:01,000 --> 00:00:02,000\n\nhello\n").is_none());
+        assert!(srt_to_lrc("").is_none());
+    }
+
+    #[test]
+    fn srt_timestamp_parsing() {
+        assert_eq!(parse_srt_time_range("00:01:02,500 --> 00:01:05,000"), Some((62_500, 65_000)));
+        assert_eq!(
+            parse_srt_time_range("01:02:03,45 --> 01:02:04.9"),
+            Some((3723_450, 3724_900))
+        );
+    }
+
+    #[test]
+    fn lrc_timestamp_format() {
+        assert_eq!(format_lrc_timestamp(62_500), "[01:02.50]");
+        assert_eq!(format_lrc_timestamp(3_724_900), "[62:04.90]");
+    }
+
+    #[test]
+    fn clean_subtitle_text_strips_tags_and_entities() {
+        assert_eq!(
+            clean_subtitle_text("<i>hello &amp; <font>world</font></i>"),
+            "hello & world"
+        );
+    }
 }

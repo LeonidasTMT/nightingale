@@ -636,6 +636,18 @@ pub fn delete_songs(target: &SongTarget) -> Result<usize, String> {
                 if let Err(e) = std::fs::remove_file(path) {
                     tracing::warn!(path = %path.display(), error = %e, "delete_songs: file removal failed");
                 }
+                // Drop sidecar lyrics for the same stem too (YouTube imports
+                // ship an .lrc next to the audio).
+                if let (Some(parent), Some(stem)) = (path.parent(), path.file_stem()) {
+                    for ext in ["lrc", "elrc"] {
+                        let mut name = stem.to_os_string();
+                        name.push(format!(".{ext}"));
+                        let sidecar = parent.join(name);
+                        if sidecar.is_file() {
+                            let _ = std::fs::remove_file(&sidecar);
+                        }
+                    }
+                }
             }
         }
     }
