@@ -632,8 +632,10 @@ pub fn delete_songs(target: &SongTarget) -> Result<usize, String> {
     if let Some(root) = local_library_root() {
         for song in &songs {
             let path = Path::new(&song.path);
-            if path.is_absolute() && path.starts_with(&root) {
-                let _ = std::fs::remove_file(path);
+            if within_library(path, &root) {
+                if let Err(e) = std::fs::remove_file(path) {
+                    tracing::warn!(path = %path.display(), error = %e, "delete_songs: file removal failed");
+                }
             }
         }
     }
@@ -644,6 +646,15 @@ pub fn delete_songs(target: &SongTarget) -> Result<usize, String> {
     }
 
     library_db::delete_songs_by_hashes(&hashes).map_err(|e| e.to_string())
+}
+
+/// Whether `path` lives inside the library folder. Both sides are compared in
+/// canonical form: on Windows `canonicalize` adds a `\\?\` prefix that makes a
+/// naive `starts_with` against a raw path fail (and vice versa).
+fn within_library(path: &Path, root: &Path) -> bool {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(&root)
 }
 
 fn local_library_root() -> Option<PathBuf> {
