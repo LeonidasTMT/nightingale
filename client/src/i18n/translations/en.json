@@ -139,6 +139,8 @@
   "library.songDetails.songActions.correctTheWordsAndRebuildTheirTiming": "Correct the words and rebuild their timing.",
   "library.songDetails.songActions.createASingleFileBundleDescription": "Create a single-file bundle of this song.",
   "library.songDetails.songActions.deleteCache": "Delete cache",
+  "library.songDetails.songActions.deleteSong": "Delete song",
+  "library.songDetails.songActions.deleteSongDescription": "Remove this song from the library and delete its audio file. This cannot be undone.",
   "library.songDetails.songActions.editLyrics": "Edit lyrics",
   "library.songDetails.songActions.editLyricsLrc": "Edit lyrics (LRC)",
   "library.songDetails.songActions.exportNge": "Export (.nge)",

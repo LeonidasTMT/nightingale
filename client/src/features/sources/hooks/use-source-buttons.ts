@@ -1,4 +1,4 @@
-import { Disc3Icon, FolderIcon, RefreshCwIcon } from 'lucide-react';
+import { Disc3Icon, FolderIcon, RefreshCwIcon, YoutubeIcon } from 'lucide-react';
 import type { ComponentType, SVGProps } from 'react';
 
 import type { BadgeTone } from '@/features/menu/components/sidebar/source-action-button';
@@ -57,6 +57,7 @@ export const useSourceButtons = (): SourceButton[] => {
     rescanDisabled,
     isPending,
     hasSource,
+    isFolderSource,
     libraryPinned,
     jellyfinSource,
     navidromeSource,
@@ -130,6 +131,19 @@ export const useSourceButtons = (): SourceButton[] => {
       tooltip: t('sources.buttons.rescanLibraryHint'),
       handler: rescan,
       disabled: rescanDisabled,
+    });
+  }
+
+  // YouTube import only makes sense against an active folder source —
+  // pinned (self-hosted) or picked in-app.
+  if (isFolderSource) {
+    buttons.push({
+      key: 'youtube',
+      icon: YoutubeIcon,
+      label: 'Add from YouTube',
+      tooltip: 'Search YouTube and add songs to the library folder',
+      handler: () => setMode('add-from-youtube'),
+      disabled: isPending,
     });
   }
 

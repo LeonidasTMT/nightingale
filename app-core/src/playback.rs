@@ -60,6 +60,20 @@ impl PixabayVideoDownloaded {
     }
 }
 
+/// Melody (target notes + F0 contour) for a song, in the original timeline.
+/// Returns `Ok(None)` when the song has no melody file yet (pre-feature
+/// analysis or stemless source); the client hides the note highway then.
+pub fn load_melody(file_hash: &str) -> Result<Option<Value>, NightingaleError> {
+    let cache = CacheDir::new();
+    let path = cache.melody_path(file_hash);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let data = std::fs::read_to_string(&path)?;
+    let melody: Value = serde_json::from_str(&data)?;
+    Ok(Some(melody))
+}
+
 pub fn load_transcript(file_hash: &str) -> Result<Value, NightingaleError> {
     if let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten()
         && song_is_nge(&song)

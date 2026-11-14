@@ -41,6 +41,10 @@ impl CacheDir {
             .join(format!("{hash}_transcript_{}.json", format_tempo(tempo)))
     }
 
+    pub fn melody_path(&self, hash: &str) -> PathBuf {
+        self.path.join(format!("{hash}_melody.json"))
+    }
+
     pub fn instrumental_path(&self, hash: &str) -> PathBuf {
         self.path.join(format!("{hash}_instrumental.mp3"))
     }

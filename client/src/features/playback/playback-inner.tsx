@@ -16,6 +16,7 @@ import { Background } from '@/features/playback/components/background';
 import { ResultDialog } from '@/features/playback/components/dialogs/result';
 import { LoadingScreen } from '@/features/playback/components/loading-screen';
 import { LyricsDisplay } from '@/features/playback/components/lyrics-display';
+import { NoteHighway } from '@/features/playback/components/note-highway';
 import { PauseOverlay } from '@/features/playback/components/pause-overlay';
 import { PitchGraph } from '@/features/playback/components/pitch-graph';
 import { PlaybackHud } from '@/features/playback/components/playback-hud';
@@ -26,6 +27,7 @@ import {
   themeName,
 } from '@/features/playback/components/theme';
 import { usePlaybackInput, usePlaybackResult } from '@/features/playback/hooks';
+import { useMelody } from '@/features/playback/hooks/use-melody';
 import { usePlaybackConfigPersist } from '@/features/playback/hooks/use-playback-config-persist';
 import { usePlaybackRemote } from '@/features/playback/hooks/use-playback-remote';
 import {
@@ -95,6 +97,7 @@ function PlaybackLayout({
   const { theme, themes, videoFlavor } = usePlaybackThemeState();
   const themeActions = usePlaybackThemeActions();
   const mic = usePlaybackMicState();
+  const melody = useMelody(song.file_hash);
   const micActions = usePlaybackMicActions();
   const persistConfig = usePlaybackConfigPersist(config);
   const {
@@ -242,6 +245,14 @@ function PlaybackLayout({
       {!isPitchGuideTheme(theme) && (
         <PitchGraph series={mic.series} position={hudPosition} scale={pitchGraphScale} />
       )}
+      <NoteHighway
+        melody={melody}
+        song={song}
+        series={mic.series}
+        score={mic.pitchScore}
+        position={hudPosition}
+        scale={pitchGraphScale}
+      />
       <LyricsDisplay
         segments={segments}
         verticalPosition={lyricsVerticalPosition}

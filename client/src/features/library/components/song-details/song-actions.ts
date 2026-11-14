@@ -36,6 +36,7 @@ type AnalysisHandlers = {
   enqueueOne: AnalysisHandler;
   cancelAnalysisOne: AnalysisHandler;
   deleteSongCache: AnalysisHandler;
+  deleteSong: AnalysisHandler;
   reanalyzeFull: AnalysisHandler;
   reanalyzeTranscript: AnalysisHandler;
   realign: AnalysisHandler;
@@ -232,6 +233,18 @@ export function buildActionGroups({
       },
     ]);
   }
+
+  groups.push([
+    {
+      icon: Trash2Icon,
+      title: 'library.songDetails.songActions.deleteSong',
+      description: 'library.songDetails.songActions.deleteSongDescription',
+      destructive: true,
+      onClick: run(`Deleted "${song.title}" from the library`, () =>
+        analysis.deleteSong(song.file_hash),
+      ),
+    },
+  ]);
 
   return groups;
 }

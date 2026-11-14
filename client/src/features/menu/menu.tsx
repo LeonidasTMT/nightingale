@@ -5,6 +5,7 @@ import { EXIT_SUPPORTED } from '@/bridge/exit';
 import { EditLyricsDialog } from '@/features/lyrics/components';
 import { SelectLanguageDialog } from '@/features/lyrics/components/language';
 import { ViewLyricsDialog } from '@/features/lyrics/components/view-lyrics';
+import { AddFromYoutubeDialog } from '@/features/menu/components/add-from-youtube';
 import { ClearCacheDialog } from '@/features/menu/components/clear-cache';
 import { DonateDialog } from '@/features/menu/components/donate';
 import { ExitDialog } from '@/features/menu/components/exit';
@@ -73,6 +74,7 @@ export const MenuLayout = () => {
       <EditLyricsDialog />
       <ViewLyricsDialog />
       <ClearCacheDialog />
+      <AddFromYoutubeDialog />
       <SourceDialogs mode={mode} />
       <QueuePlaybackListener />
       <Setup />

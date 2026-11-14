@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 
 import {
   cancelAnalysis,
+  deleteSong,
   deleteSongCache,
   enqueue,
   realign,
@@ -145,6 +146,9 @@ export const useAnalysis = () => {
       deleteSongCache: wrap(async (fileHash: string) => {
         await deleteSongCache(one(fileHash));
         markSongCacheDeleted(fileHash);
+      }, invalidateSongs),
+      deleteSong: wrap(async (fileHash: string) => {
+        await deleteSong(one(fileHash));
       }, invalidateSongs),
       deleteSongCacheAll: wrapBulk(
         BulkActionKind.Immediate,

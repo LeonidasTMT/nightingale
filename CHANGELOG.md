@@ -13,6 +13,17 @@ below.
 
 ## [Unreleased]
 
+### Features
+
+- Added **Add from YouTube** to the sidebar sources: search YouTube and import a song as MP3 into the library folder using the vendored Python/yt-dlp, with progress reported through the UI. When a Netscape `yt_cookies.txt` exists in the data or library folder it is used automatically (also `--cookies-from-browser` fallback), so no QR-code queue is needed.
+- Added a **Note Highway** vocal trainer to playback: a scrolling target-note highway with your live microphone pitch trace, Joysound-style judgments (PERFECT/GREAT/GOOD/MISS), combo multiplier, running score, and a live grade badge. Octave snapping is anchored to the melody so low male vocals stay in range.
+
+### Fixes
+
+- Self-hosted/Docker setup no longer fails on Linux: the ffmpeg vendor build now downloads the BtbN GitHub release for linux64/linuxarm64/win64 instead of the johnvansickle static build, which returns anti-bot HTML and breaks extraction.
+- Source action buttons (including Add from YouTube) are shown again when a folder library is pinned (self-hosted/Docker mode).
+- YouTube import now removes the intermediate audio file yt-dlp can leave behind after MP3 conversion (e.g. `.webm`) instead of leaking it into the library folder.
+
 ## [1.4.1] - 2026-11-09
 
 ### Fixes

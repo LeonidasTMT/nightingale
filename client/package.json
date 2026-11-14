@@ -16,7 +16,7 @@
     "format:staged": "oxfmt --no-error-on-unmatched-pattern",
     "icons": "tauri icon src/assets/images/logo_square.png",
     "lint": "pnpm lint:code && pnpm lint:css",
-    "lint:code": "oxlint",
+    "lint:code": "oxlint --no-error-on-unmatched-pattern",
     "lint:code:fix": "oxlint --fix",
     "lint:css": "stylelint \"src/**/*.css\"",
     "lint:css:fix": "stylelint \"src/**/*.css\" --fix",

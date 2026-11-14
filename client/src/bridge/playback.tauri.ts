@@ -1,10 +1,16 @@
 import type { MediaEndpoint } from '@/types/MediaEndpoint';
+import type { Melody } from '@/types/Melody';
 import type { AudioPaths, Transcript } from '@/types/Transcript';
 
 import { invoke, listen, type UnlistenFn } from './runtime';
 
 export const loadTranscript = async (fileHash: string): Promise<Transcript> => {
   return await invoke<Transcript>('load_transcript', { fileHash });
+};
+
+/** Target notes + F0 contour; null when the song has no melody yet. */
+export const loadMelody = async (fileHash: string): Promise<Melody | null> => {
+  return await invoke<Melody | null>('load_melody', { fileHash });
 };
 
 export const getAudioPaths = async (fileHash: string): Promise<AudioPaths> => {

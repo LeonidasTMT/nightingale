@@ -8,6 +8,7 @@ import {
   fetchPixabayVideos as tauriFetchPixabayVideos,
   getAudioPaths as tauriRawGetAudioPaths,
   getMediaEndpoint as tauriGetMediaEndpoint,
+  loadMelody as tauriLoadMelody,
   loadTranscript as tauriLoadTranscript,
   onPixabayVideoDownloaded as tauriOnPixabayVideoDownloaded,
   onStemsReady as tauriOnStemsReady,
@@ -129,6 +130,7 @@ export const exportSongNge = async (fileHash: string): Promise<SongExportResult 
 
 // ─── Re-exports for command/event call sites ─────────────────────────────
 
+export const loadMelody = tauriLoadMelody;
 export const loadTranscript = tauriLoadTranscript;
 export const ensureMp3Stems = tauriEnsureMp3Stems;
 export const ensurePlayableSourceVideo = tauriEnsurePlayableSourceVideo;

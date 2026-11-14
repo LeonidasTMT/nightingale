@@ -447,7 +447,10 @@ export const MainNavigation = ({
     const callbacks = rows.map((row) => {
       if (row.kind === 'collapse') {
         return () => {
-          setOpenBySection((prev) => ({ ...prev, [row.section]: !prev[row.section] }));
+          setOpenBySection((prev) => ({
+            ...prev,
+            [row.section]: !prev[row.section],
+          }));
         };
       }
 
@@ -484,7 +487,8 @@ export const MainNavigation = ({
     return () => cancelAnimationFrame(rafId);
   }, [focus.sidebarIndex, focus.source, isSidebarActive]);
 
-  const showEmptyPlaceholder = !menu || visibleSections.length === 0;
+  const isLoading = !menu;
+  const isEmptyLibrary = !isLoading && visibleSections.length === 0;
   const itemTrees: Partial<Record<LibraryMenuSection, ItemTree>> = {
     artists: {
       parents: parentArtists,
@@ -498,6 +502,52 @@ export const MainNavigation = ({
     },
   };
 
+  const renderMenuContent = () => {
+    if (isLoading) {
+      return (
+        <SidebarMenuItem className="px-1 py-2">
+          <div className="space-y-1">
+            <SidebarMenuSkeleton showIcon />
+            <SidebarMenuSkeleton showIcon />
+            <SidebarMenuSkeleton showIcon />
+          </div>
+        </SidebarMenuItem>
+      );
+    }
+    if (isEmptyLibrary) {
+      return (
+        <SidebarMenuItem className="px-1 py-2">
+          <p className="px-2 py-1 text-xs leading-relaxed text-sidebar-foreground/70">
+            No songs yet. Add supported files to the library folder, then rescan from the sidebar.
+          </p>
+        </SidebarMenuItem>
+      );
+    }
+    return (
+      <SidebarNavProvider rows={rows} baseIndex={baseIndex}>
+        {visibleSections.map((config) => (
+          <LibraryNavSection
+            key={config.section}
+            section={config.section}
+            label={config.label}
+            icon={config.icon}
+            items={config.visibleItems}
+            filter={filter}
+            open={openBySection[config.section]}
+            onToggleOpen={(open) => {
+              setOpenBySection((prev) => ({
+                ...prev,
+                [config.section]: open,
+              }));
+            }}
+            onSelectItem={activateMenuItem}
+            itemTree={itemTrees[config.section]}
+          />
+        ))}
+      </SidebarNavProvider>
+    );
+  };
+
   return (
     <SidebarContent className="overflow-hidden">
       <FolderActions
@@ -509,36 +559,7 @@ export const MainNavigation = ({
         className="no-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain"
       >
         <SidebarGroup>
-          <SidebarMenu>
-            {showEmptyPlaceholder ? (
-              <SidebarMenuItem className="px-1 py-2">
-                <div className="space-y-1">
-                  <SidebarMenuSkeleton showIcon />
-                  <SidebarMenuSkeleton showIcon />
-                  <SidebarMenuSkeleton showIcon />
-                </div>
-              </SidebarMenuItem>
-            ) : (
-              <SidebarNavProvider rows={rows} baseIndex={baseIndex}>
-                {visibleSections.map((config) => (
-                  <LibraryNavSection
-                    key={config.section}
-                    section={config.section}
-                    label={config.label}
-                    icon={config.icon}
-                    items={config.visibleItems}
-                    filter={filter}
-                    open={openBySection[config.section]}
-                    onToggleOpen={(open) => {
-                      setOpenBySection((prev) => ({ ...prev, [config.section]: open }));
-                    }}
-                    onSelectItem={activateMenuItem}
-                    itemTree={itemTrees[config.section]}
-                  />
-                ))}
-              </SidebarNavProvider>
-            )}
-          </SidebarMenu>
+          <SidebarMenu>{renderMenuContent()}</SidebarMenu>
         </SidebarGroup>
       </div>
     </SidebarContent>

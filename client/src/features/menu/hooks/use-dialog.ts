@@ -13,6 +13,7 @@ export type DialogMode =
   | 'update'
   | 'donate'
   | 'clear-playback-queue'
+  | 'add-from-youtube'
   | 'folder-source-confirm'
   | 'jellyfin-connect'
   | 'navidrome-connect'

@@ -139,6 +139,8 @@
   "library.songDetails.songActions.correctTheWordsAndRebuildTheirTiming": "修正歌词并重建时间轴。",
   "library.songDetails.songActions.createASingleFileBundleDescription": "创建此歌曲的单文件打包。",
   "library.songDetails.songActions.deleteCache": "删除缓存",
+  "library.songDetails.songActions.deleteSong": "删除歌曲",
+  "library.songDetails.songActions.deleteSongDescription": "将此歌曲从曲库中移除并删除其音频文件。此操作无法撤销。",
   "library.songDetails.songActions.editLyrics": "编辑歌词",
   "library.songDetails.songActions.editLyricsLrc": "编辑歌词（LRC）",
   "library.songDetails.songActions.exportNge": "导出（.nge）",

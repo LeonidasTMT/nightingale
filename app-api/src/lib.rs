@@ -723,6 +723,12 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
                 app_core::delete_cache(args.target).map_err(ApiError::internal)?,
             ))
         }
+        "delete_song" => {
+            let args: SongTargetArgs = deserialize(payload)?;
+            Ok(Value::from(
+                app_core::delete_songs(&args.target).map_err(ApiError::internal)?,
+            ))
+        }
         "reanalyze_transcript" => {
             let args: SongTargetLanguageArgs = deserialize(payload)?;
             Ok(Value::from(
@@ -830,6 +836,12 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
         }
 
         // ── Playback ─────────────────────────────────────────────────────
+        "load_melody" => {
+            let args: FileHashArgs = deserialize(payload)?;
+            let melody = app_core::load_melody(&args.file_hash)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok(serde_json::to_value(melody).map_err(serde_err)?)
+        }
         "load_transcript" => {
             let args: FileHashArgs = deserialize(payload)?;
             app_core::load_transcript(&args.file_hash)
@@ -873,6 +885,18 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
         }
         "fetch_pixabay_videos" => fetch_pixabay_videos_cmd(events, payload),
 
+        // ── YouTube Import ─────────────────────────────────────────────
+        "search_youtube" => {
+            let args: YtSearchArgs = deserialize(payload)?;
+            let query = args.query.clone();
+            let results = tokio::task::spawn_blocking(move || app_core::search_youtube(&query))
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .map_err(ApiError::bad_request)?;
+            Ok(serde_json::to_value(results).map_err(serde_err)?)
+        }
+        "import_youtube" => import_youtube_cmd(events, payload),
+
         // ── Vendor ───────────────────────────────────────────────────────
         "is_ready" => Ok(Value::Bool(app_core::is_ready())),
         "trigger_setup" => vendor::trigger_setup(events, payload),
@@ -900,6 +924,37 @@ fn deserialize<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, ApiError
 #[serde(rename_all = "camelCase")]
 struct NameArgs {
     name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YtSearchArgs {
+    query: String,
+}
+
+fn import_youtube_cmd(events: EventEmitter, payload: Value) -> CmdResult {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Args {
+        input: String,
+    }
+    let args: Args = deserialize(payload)?;
+
+    std::thread::spawn(move || {
+        let events_for_progress = events.clone();
+        let result = app_core::import_youtube(&args.input, move |progress| {
+            events_for_progress.emit("yt-import-progress", &progress)
+        });
+        match result {
+            Ok(path) => events.emit_value(
+                "yt-import-done",
+                Value::String(path.to_string_lossy().into_owned()),
+            ),
+            Err(error) => events.emit_value("yt-import-error", Value::String(error)),
+        }
+    });
+
+    Ok(Value::Null)
 }
 
 #[derive(Deserialize)]

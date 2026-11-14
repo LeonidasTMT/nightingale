@@ -78,7 +78,7 @@ pub(crate) fn analyzer_dir() -> PathBuf {
     vendor_dir().join("analyzer")
 }
 
-fn uv_path() -> PathBuf {
+pub(crate) fn uv_path() -> PathBuf {
     let name = if cfg!(windows) { "uv.exe" } else { "uv" };
     vendor_dir().join(name)
 }
@@ -266,12 +266,68 @@ pub fn run_vendor_setup(
 // ─── Download helpers ───────────────────────────────────────────────
 
 fn download_to_file(url: &str, dest: &Path) -> Result<(), String> {
-    let resp = ureq::get(url).call().map_err(|e| e.to_string())?;
+    // Bounded timeouts so a stalled connection can't hang setup forever.
+    let config = ureq::config::Config::builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(60)))
+        .build();
+    let agent = config.new_agent();
+
+    // Transient network hiccups (TLS resets, CDN blips) are common enough that
+    // one retry per attempt is worth it; the archive validation below catches
+    // anything that still arrives broken.
+    const ATTEMPTS: usize = 3;
+    let mut last_error = String::new();
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(attempt as u64));
+        }
+        match download_once(&agent, url, dest) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_error = e,
+        }
+    }
+    Err(last_error)
+}
+
+fn download_once(agent: &ureq::Agent, url: &str, dest: &Path) -> Result<(), String> {
+    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
     let mut body = resp.into_body();
     let mut reader = body.as_reader();
     let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
     std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Rejects downloads that aren't real archives. Bot-check/CDN interstitial
+/// pages frequently arrive as HTTP 200 HTML, which would otherwise surface
+/// later as a cryptic `xz`/`unzip` failure.
+fn validate_archive(path: &Path, ext: &str, url: &str) -> Result<(), String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut head = [0u8; 8];
+    let read = file.read(&mut head).map_err(|e| e.to_string())?;
+    let head: Vec<u8> = head.iter().take(read).copied().collect();
+
+    let valid = match ext {
+        "tar.xz" => head.starts_with(&[0xFD, 0x37, b'z', b'X', b'Z', 0x00]),
+        "tar.gz" => head.starts_with(&[0x1F, 0x8B]),
+        "zip" => head.len() >= 2 && head[0] == b'P' && head[1] == b'K',
+        _ => true,
+    };
+    if valid {
+        return Ok(());
+    }
+
+    let preview = String::from_utf8_lossy(&head)
+        .chars()
+        .take(40)
+        .collect::<String>();
+    Err(format!(
+        "Download from {url} is not a valid {ext} archive (leading bytes: {preview}). \
+         The source may be rate-limited or serving an HTML interstitial page."
+    ))
 }
 
 fn extract_archive(archive: &Path, dest_dir: &Path) -> Result<(), String> {
@@ -345,6 +401,11 @@ fn mark_executable(_path: &Path) -> Result<(), String> {
 pub(crate) fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(program);
+    // The vendored toolchain is self-contained; ambient Python env vars from
+    // the host (e.g. a uv-managed PYTHONHOME) would silently re-point our
+    // venv's interpreter at a foreign stdlib.
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -356,19 +417,27 @@ pub(crate) fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 
 // ─── Step 1: Download ffmpeg ─────────────────────────────────────────
 
-fn ffmpeg_download_url() -> Result<&'static str, String> {
+/// Ordered list of ffmpeg sources per target. The first entry is the upstream
+/// default; the rest are fallbacks used when an earlier source is unreachable
+/// or serves something that isn't a real archive (bot-check/CDN interstitial
+/// pages can arrive as HTTP 200 HTML — see [`validate_archive`]).
+fn ffmpeg_download_urls() -> Result<&'static [&'static str], String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => {
-            Ok("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz")
-        }
-        ("linux", "aarch64") => {
-            Ok("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz")
-        }
-        ("macos", "aarch64") => Ok("https://evermeet.cx/ffmpeg/ffmpeg-8.1.zip"),
-        ("macos", "x86_64") => Ok("https://evermeet.cx/ffmpeg/ffmpeg-8.1.zip"),
-        ("windows", "x86_64") => Ok(
+        ("linux", "x86_64") => Ok(&[
+            "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+            // Same BtbN static-build family the Windows target already uses,
+            // served from GitHub's CDN.
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+        ]),
+        ("linux", "aarch64") => Ok(&[
+            "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+        ]),
+        ("macos", "aarch64") => Ok(&["https://evermeet.cx/ffmpeg/ffmpeg-8.1.zip"]),
+        ("macos", "x86_64") => Ok(&["https://evermeet.cx/ffmpeg/ffmpeg-8.1.zip"]),
+        ("windows", "x86_64") => Ok(&[
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-        ),
+        ]),
         (os, arch) => Err(format!("Unsupported platform for ffmpeg: {os}-{arch}")),
     }
 }
@@ -379,38 +448,60 @@ pub fn step_download_ffmpeg() -> Result<(), String> {
         return Ok(());
     }
 
-    let url = ffmpeg_download_url()?;
+    let urls = ffmpeg_download_urls()?;
+    let binary_name = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
 
     let tmp_dir = vendor_dir().join("_tmp_ffmpeg");
-    let _ = std::fs::create_dir_all(&tmp_dir);
 
-    let ext = if url.ends_with(".tar.xz") {
-        "tar.xz"
-    } else {
-        "zip"
-    };
-    let archive = tmp_dir.join(format!("ffmpeg.{ext}"));
+    let mut last_error = String::new();
+    for (i, &url) in urls.iter().enumerate() {
+        // Fresh extraction dir per attempt so a failed source can't leak files
+        // into the next attempt's binary search.
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
-    let result: Result<(), String> = (|| {
-        download_to_file(url, &archive)?;
-
-        extract_archive(&archive, &tmp_dir)?;
-
-        let binary_name = if cfg!(windows) {
-            "ffmpeg.exe"
+        let ext = if url.ends_with(".tar.xz") {
+            "tar.xz"
         } else {
-            "ffmpeg"
+            "zip"
         };
-        let found = find_file_in(&tmp_dir, binary_name)
-            .ok_or_else(|| format!("Could not find {binary_name} in downloaded archive"))?;
+        let archive = tmp_dir.join(format!("ffmpeg.{ext}"));
 
-        std::fs::copy(&found, &dest).map_err(|e| format!("Failed to copy ffmpeg: {e}"))?;
-        mark_executable(&dest)?;
-        Ok(())
-    })();
+        let attempt: Result<(), String> = (|| {
+            download_to_file(url, &archive)?;
+            validate_archive(&archive, ext, url)?;
+            extract_archive(&archive, &tmp_dir)?;
+
+            let found = find_file_in(&tmp_dir, binary_name)
+                .ok_or_else(|| format!("Could not find {binary_name} in downloaded archive"))?;
+
+            std::fs::copy(&found, &dest).map_err(|e| format!("Failed to copy ffmpeg: {e}"))?;
+            mark_executable(&dest)?;
+            Ok(())
+        })();
+
+        let _ = std::fs::remove_file(&archive);
+
+        match attempt {
+            Ok(()) => break,
+            Err(e) => {
+                tracing::warn!("[vendor] ffmpeg source #{i} failed: {e}");
+                last_error = e;
+            }
+        }
+    }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    result?;
+
+    if !dest.is_file() {
+        return Err(format!(
+            "Failed to download ffmpeg from all sources. Last error: {last_error}"
+        ));
+    }
 
     Ok(())
 }
@@ -458,6 +549,7 @@ pub fn step_download_uv() -> Result<(), String> {
 
     let result: Result<(), String> = (|| {
         download_to_file(url, &archive)?;
+        validate_archive(&archive, ext, url)?;
         extract_archive(&archive, &tmp_dir)?;
 
         let binary_name = if cfg!(windows) { "uv.exe" } else { "uv" };
@@ -699,6 +791,8 @@ pub fn step_install_packages() -> Result<(), String> {
         // Tokenizers the Qwen3 forced aligner uses internally for ja/ko.
         "nagisa>=0.2.11",
         "soynlp>=0.0.493",
+        // YouTube import (fork feature).
+        "yt-dlp",
     ];
 
     if gpu.legacy_torch {

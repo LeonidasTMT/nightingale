@@ -188,6 +188,17 @@ pub(crate) fn delete_songs_not_in_paths(paths: &[String]) -> Result<(), Nighting
     })
 }
 
+pub(crate) fn delete_songs_by_hashes(hashes: &[String]) -> Result<usize, NightingaleError> {
+    if hashes.is_empty() {
+        return Ok(0);
+    }
+    with_conn_mut(|conn| {
+        let count = diesel::delete(songs::table.filter(songs::file_hash.eq_any(hashes)))
+            .execute(conn)?;
+        Ok(count)
+    })
+}
+
 pub(crate) fn load_song_by_hash(file_hash: &str) -> Result<Option<Song>, NightingaleError> {
     with_conn(|conn| {
         let payload = songs::table

@@ -23,9 +23,11 @@ mod source;
 mod usdx;
 mod vendor;
 mod vendor_scripts;
+mod yt_import;
 
 pub use analyzer::{
-    AnalysisQueue, cancel_analysis, delete_cache, enqueue, realign, reanalyze_force_transcribe,
+    AnalysisQueue, cancel_analysis, delete_cache, delete_songs, enqueue, realign,
+    reanalyze_force_transcribe,
     reanalyze_full, reanalyze_transcript, refresh_metadata, shutdown_server,
 };
 pub use backgrounds::{
@@ -55,7 +57,8 @@ pub use media_server::{MediaEndpoint, local_media_roots};
 pub use playback::{
     AudioPaths, PixabayVideoDownloaded, ShiftDone, ShiftResult, StemsReady,
     download_pixabay_videos, ensure_mp3_stems, ensure_mp3_stems_ready_payload,
-    ensure_playable_source_video, get_audio_paths, get_cached_pixabay_videos, load_transcript,
+    ensure_playable_source_video, get_audio_paths, get_cached_pixabay_videos, load_melody,
+    load_transcript,
     prefetch_one_per_flavor, shift_key, shift_key_done_payload, shift_tempo,
     shift_tempo_done_payload,
 };
@@ -88,6 +91,9 @@ pub use vendor::{
     refresh_analyzer_scripts_if_ready, resolve_data_path_input, run_vendor_setup, step_create_venv,
     step_download_ffmpeg, step_download_uv, step_extract_scripts, step_install_packages,
     step_install_python,
+};
+pub use yt_import::{
+    YtImportPhase, YtImportProgress, YtSearchResult, import_youtube, search_youtube,
 };
 
 pub fn startup() -> Result<(), String> {

@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use ts_rs::TS;
 
 use crate::cache::{CacheDir, models_dir};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, LibrarySource};
 use crate::error::NightingaleError;
 use crate::library_db;
 use crate::library_model::{LibraryMenuFilters, SongTarget};
@@ -610,6 +610,48 @@ pub fn delete_cache(target: SongTarget) -> Result<usize, String> {
         library_db::iter_file_hashes_filtered_full_reanalyzable,
         |hash| Ok(delete_cache_one(hash)),
     )
+}
+
+/// Remove songs from the library: their audio files (when stored under the
+/// local library folder), generated cache, and database rows.
+pub fn delete_songs(target: &SongTarget) -> Result<usize, String> {
+    let hashes = match target {
+        SongTarget::Hashes { hashes } => hashes.clone(),
+        SongTarget::Filter { .. } => {
+            return Err("Deleting by filter is not supported; pick songs explicitly".to_string())
+        }
+    };
+    if hashes.is_empty() {
+        return Ok(0);
+    }
+
+    let songs = library_db::load_songs_by_hashes(&hashes).map_err(|e| e.to_string())?;
+
+    // Only remove files that live inside the local library folder — remote
+    // sources (Jellyfin/Navidrome/Plex) keep their own storage.
+    if let Some(root) = local_library_root() {
+        for song in &songs {
+            let path = Path::new(&song.path);
+            if path.is_absolute() && path.starts_with(&root) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    let cache = CacheDir::new();
+    for hash in &hashes {
+        cache.delete_song_cache(hash);
+    }
+
+    library_db::delete_songs_by_hashes(&hashes).map_err(|e| e.to_string())
+}
+
+fn local_library_root() -> Option<PathBuf> {
+    let path = match AppConfig::load().library_source.as_ref()? {
+        LibrarySource::Folder { path } => PathBuf::from(path),
+        _ => return None,
+    };
+    Some(std::fs::canonicalize(&path).unwrap_or(path))
 }
 
 fn reanalyze_transcript_one(file_hash: &str, language: Option<String>) -> bool {

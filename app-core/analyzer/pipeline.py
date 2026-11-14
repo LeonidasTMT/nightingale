@@ -8,6 +8,7 @@ import tempfile
 from gpu import hard_free_gpu, log_vram
 from whisper_compat import progress
 from key_detect import detect_key
+from melody import extract_melody
 from stems import separate_stems, separate_stems_uvr
 from transcribe import transcribe_vocals
 from align import align_lyrics
@@ -24,6 +25,25 @@ def convert_to_mp3(src, dest_mp3):
     )
     if os.path.isfile(dest_mp3):
         os.remove(src)
+
+
+def _backfill_melody(output_dir, file_hash, transcript_path):
+    """Add a melody file for songs analyzed before the melody feature existed."""
+    key = None
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            key = json.load(f).get("key")
+    except (OSError, ValueError):
+        pass
+    candidates = []
+    if key:
+        safe_key = str(key).strip().replace(" ", "_").replace("-", "_")
+        candidates.append(os.path.join(output_dir, f"{file_hash}_vocals_{safe_key}_1.0.mp3"))
+    candidates.append(os.path.join(output_dir, f"{file_hash}_vocals.mp3"))
+    for vocals_path in candidates:
+        if os.path.isfile(vocals_path):
+            extract_melody(vocals_path, output_dir, file_hash)
+            return
 
 
 def normalize_tempo(tempo):
@@ -160,6 +180,7 @@ def run_pipeline(
     transcript_path = os.path.join(output_dir, f"{file_hash}_transcript.json")
     transcript_exists = os.path.isfile(transcript_path)
     if transcript_exists and not skip_transcription:
+        _backfill_melody(output_dir, file_hash, transcript_path)
         progress(100, "Already analyzed, skipping")
         return
 
@@ -179,6 +200,11 @@ def run_pipeline(
                 free_gpu_fn=free_gpu_fn,
             )
             log_vram("phase:after_separation")
+
+            if vocals_path:
+                progress(52, "Extracting vocal melody...")
+                extract_melody(vocals_path, output_dir, file_hash)
+                progress(54, "Melody extracted")
 
         if skip_transcription:
             # Keep the provided LRC transcript; only stamp key/tempo onto it.
