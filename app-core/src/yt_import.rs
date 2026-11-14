@@ -366,6 +366,57 @@ fn ensure_yt_dlp() -> Result<(), String> {
     Ok(())
 }
 
+/// Pick the caption language that matches the audio itself.
+///
+/// YouTube auto-generates captions in the spoken language and offers machine
+/// translations of them. In yt-dlp's info, translated tracks carry a `tlang`
+/// query param while the original track does not, so the first auto-caption
+/// without one is the right language. Falls back to any manual subtitle.
+fn pick_caption_language(url: &str) -> Option<String> {
+    let mut args: Vec<String> = vec![
+        "--skip-download".into(),
+        "--no-playlist".into(),
+    ];
+    for arg in yt_cookies_args() {
+        args.push(arg);
+    }
+    args.push("-j".into());
+    args.push(url.to_string());
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let output = match run_yt_dlp_capture(&args_refs, Duration::from_secs(300)) {
+        Ok(out) if out.status.success() => out,
+        _ => return None,
+    };
+    let info: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("pick_caption_language: bad info json: {e}");
+            return None;
+        }
+    };
+
+    // 1) Original-language auto-caption track (its URL has no tlang= param).
+    if let Some(ac) = info.get("automatic_captions").and_then(|v| v.as_object()) {
+        if let Some((lang, _)) = ac.iter().find(|(_, tracks)| {
+            tracks
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("url"))
+                .and_then(|u| u.as_str())
+                .map(|u| !u.contains("tlang="))
+                .unwrap_or(false)
+        }) {
+            return Some(lang.clone());
+        }
+    }
+
+    // 2) Any manual subtitle.
+    info.get("subtitles")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.keys().next().cloned())
+}
+
 /// Run a short yt-dlp invocation and capture its output, bounded by a timeout.
 fn run_yt_dlp_capture(args: &[&str], timeout: Duration) -> Result<std::process::Output, String> {
     let mut cmd = silent_command(python_path());
@@ -560,6 +611,14 @@ fn import_youtube_impl(
 
     for arg in yt_cookies_args() {
         cmd.arg(arg);
+    }
+
+    // Pin the caption track to the language that matches the audio. yt-dlp's
+    // default prefers English, which for non-English songs means a machine
+    // translation of the lyrics - useless for karaoke.
+    if let Some(lang) = pick_caption_language(&url) {
+        tracing::info!(lang = %lang, "yt-import: using caption language");
+        cmd.arg("--sub-langs").arg(&lang);
     }
 
     cmd.stdin(Stdio::null())
