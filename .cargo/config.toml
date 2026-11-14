@@ -1,3 +1,8 @@
+# Keep local debug builds slim (full debuginfo is what bloats target/debug
+# into multi-GB for this workspace). Release builds are unaffected.
+[profile.dev]
+debug = "line-tables-only"
+
 [env]
 TS_RS_EXPORT_DIR = { value = "client/src/types", relative = true }
 
