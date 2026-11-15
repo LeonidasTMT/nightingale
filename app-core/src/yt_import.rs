@@ -97,7 +97,8 @@ fn yt_cookies_args() -> Vec<String> {
     }
 }
 
-fn cookie_file_args() -> Option<Vec<String>> {
+/// `yt_cookies.txt` locations checked in priority order.
+fn cookie_file_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(custom) = std::env::var("NIGHTINGALE_YT_COOKIES")
         .ok()
@@ -114,9 +115,39 @@ fn cookie_file_args() -> Option<Vec<String>> {
         candidates.push(root.join("yt_cookies.txt"));
     }
     candidates
+}
+
+fn cookie_file_args() -> Option<Vec<String>> {
+    cookie_file_candidates()
         .into_iter()
         .find(|p| p.is_file())
         .map(|path| vec!["--cookies".to_string(), path.to_string_lossy().into_owned()])
+}
+
+/// What the next import will use for YouTube sign-in, plus where to drop a
+/// cookie file. Surfaced in the Add-from-YouTube dialog so users see the
+/// actual locations instead of "the data folder or library folder".
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct YtCookieStatus {
+    /// `"file:<path>"`, `"browser:<spec>"`, or None (no sign-in).
+    pub active: Option<String>,
+    /// Where to put `yt_cookies.txt`, in priority order.
+    pub drop_paths: Vec<String>,
+}
+
+pub fn yt_cookie_status() -> YtCookieStatus {
+    let candidates = cookie_file_candidates();
+    let active = match candidates.iter().find(|p| p.is_file()) {
+        Some(path) => Some(format!("file:{}", path.to_string_lossy())),
+        None => detect_cookie_browser()
+            .map(|browser| format!("browser:{}", browser)),
+    };
+    YtCookieStatus {
+        active,
+        drop_paths: candidates.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+    }
 }
 
 /// Browsers yt-dlp's `--cookies-from-browser` accepts (v2026.x).

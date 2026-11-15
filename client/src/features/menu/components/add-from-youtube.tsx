@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import {
+  fetchYtCookieStatus,
   fetchYtSubtitleLanguages,
   importYouTube,
   onYtImportDone,
@@ -33,6 +34,7 @@ import {
   SelectValue,
 } from '@/shared/components/ui/select';
 import { ANALYSIS_QUEUE, MENU, SONGS, SONGS_META } from '@/shared/query-keys';
+import type { YtCookieStatus } from '@/types/YtCookieStatus';
 import type { YtImportProgress } from '@/types/YtImportProgress';
 import type { YtSearchResult } from '@/types/YtSearchResult';
 import type { YtSubLanguage } from '@/types/YtSubLanguage';
@@ -73,6 +75,20 @@ const errorMessage = (error: unknown): string => {
   return message;
 };
 
+const isCookieError = (message: string): boolean => /sign in|not a bot|cookies/i.test(message);
+
+/** One line describing what sign-in source imports will use, with real paths. */
+const cookieStatusLabel = (status: YtCookieStatus): string => {
+  if (status.active !== null && status.active.startsWith('file:')) {
+    return `cookie file: ${status.active.slice('file:'.length)}`;
+  }
+  if (status.active !== null && status.active.startsWith('browser:')) {
+    return `browser cookies: ${status.active.slice('browser:'.length)}`;
+  }
+  const drop = status.dropPaths.length > 0 ? status.dropPaths[0] : '';
+  return drop === '' ? 'none' : `none — to sign in, save your youtube.com cookies as ${drop}`;
+};
+
 const durationLabel = (sec?: number): string => {
   if (typeof sec !== 'number') {
     return '';
@@ -96,6 +112,7 @@ const useAddFromYoutubeFlow = (open: boolean) => {
   const queryClient = useQueryClient();
 
   const [flow, setFlow] = useState<Flow>(INITIAL_FLOW);
+  const [cookieStatus, setCookieStatus] = useState<YtCookieStatus | null>(null);
   const [wasOpen, setWasOpen] = useState(open);
 
   if (open && !wasOpen) {
@@ -106,6 +123,19 @@ const useAddFromYoutubeFlow = (open: boolean) => {
   }
 
   const unsubsRef = useRef<Array<() => void>>([]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    // The dialog component stays mounted while closed, so a late result is
+    // just re-read on the next open — no cancellation needed.
+    void fetchYtCookieStatus()
+      .then((status) => setCookieStatus(status))
+      .catch(() => {
+        // Cosmetic only — the dialog works without it.
+      });
+  }, [open]);
 
   useEffect(() => {
     const unsubs = unsubsRef.current;
@@ -195,6 +225,7 @@ const useAddFromYoutubeFlow = (open: boolean) => {
 
   return {
     flow,
+    cookieStatus,
     runSearch,
     startImport,
     openConfirm,
@@ -207,6 +238,7 @@ const useAddFromYoutubeFlow = (open: boolean) => {
 
 type SearchViewProps = {
   flow: Flow;
+  cookieStatus: YtCookieStatus | null;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onQueryChange: (value: string) => void;
   onSearch: (query: string) => void;
@@ -215,6 +247,7 @@ type SearchViewProps = {
 
 const SearchView = ({
   flow,
+  cookieStatus,
   inputRef,
   onQueryChange,
   onSearch,
@@ -261,6 +294,11 @@ const SearchView = ({
         >
           Import this link directly
         </Button>
+      )}
+      {cookieStatus !== null && (
+        <p className="break-all text-xs text-muted-foreground">
+          YouTube sign-in: {cookieStatusLabel(cookieStatus)}
+        </p>
       )}
     </>
   );
@@ -413,28 +451,37 @@ const ImportingView = ({ progress }: ImportingViewProps) => (
   </>
 );
 
-type ErrorViewProps = { error: string; onRetry: () => void };
+type ErrorViewProps = { error: string; cookieStatus: YtCookieStatus | null; onRetry: () => void };
 
-const ErrorView = ({ error, onRetry }: ErrorViewProps) => (
-  <>
-    <DialogHeader>
-      <DialogTitle className="flex items-center gap-2">
-        <AlertTriangleIcon className="size-5" />
-        Import failed
-      </DialogTitle>
-      <DialogDescription>{error}</DialogDescription>
-    </DialogHeader>
-    <DialogFooter>
-      <Button onClick={onRetry}>Try again</Button>
-    </DialogFooter>
-  </>
-);
+const ErrorView = ({ error, cookieStatus, onRetry }: ErrorViewProps) => {
+  const dropPath = isCookieError(error) ? (cookieStatus?.dropPaths[0] ?? '') : '';
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2">
+          <AlertTriangleIcon className="size-5" />
+          Import failed
+        </DialogTitle>
+        <DialogDescription>{error}</DialogDescription>
+      </DialogHeader>
+      {dropPath !== '' && (
+        <p className="break-all text-xs text-muted-foreground">
+          Fix: save your youtube.com cookies as {dropPath}
+        </p>
+      )}
+      <DialogFooter>
+        <Button onClick={onRetry}>Try again</Button>
+      </DialogFooter>
+    </>
+  );
+};
 
 export const AddFromYoutubeDialog = () => {
   const { mode, close } = useDialog();
   const open = mode === 'add-from-youtube';
   const {
     flow,
+    cookieStatus,
     runSearch,
     startImport,
     openConfirm,
@@ -458,6 +505,7 @@ export const AddFromYoutubeDialog = () => {
         {flow.view === 'search' && (
           <SearchView
             flow={flow}
+            cookieStatus={cookieStatus}
             inputRef={inputRef}
             onQueryChange={setQuery}
             onSearch={(query) => void runSearch(query)}
@@ -488,7 +536,9 @@ export const AddFromYoutubeDialog = () => {
           />
         )}
         {flow.view === 'importing' && <ImportingView progress={flow.progress} />}
-        {flow.view === 'error' && <ErrorView error={flow.error} onRetry={backToSearch} />}
+        {flow.view === 'error' && (
+          <ErrorView error={flow.error} cookieStatus={cookieStatus} onRetry={backToSearch} />
+        )}
       </DialogContent>
     </Dialog>
   );

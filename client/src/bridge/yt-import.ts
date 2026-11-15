@@ -1,8 +1,13 @@
+import type { YtCookieStatus } from '@/types/YtCookieStatus';
 import type { YtImportProgress } from '@/types/YtImportProgress';
 import type { YtSearchResult } from '@/types/YtSearchResult';
 import type { YtSubLanguage } from '@/types/YtSubLanguage';
 
 import { invoke, listen } from './runtime';
+
+export const fetchYtCookieStatus = async (): Promise<YtCookieStatus> => {
+  return await invoke<YtCookieStatus>('yt_cookie_status', {});
+};
 
 /** Search YouTube for candidate songs (flat playlist — no per-video fetch). */
 export const searchYouTube = async (query: string): Promise<YtSearchResult[]> => {

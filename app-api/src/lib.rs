@@ -900,6 +900,7 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
         "fetch_pixabay_videos" => fetch_pixabay_videos_cmd(events, payload),
 
         // ── YouTube Import ─────────────────────────────────────────────
+        "yt_cookie_status" => Ok(serde_json::to_value(app_core::yt_cookie_status()).map_err(serde_err)?),
         "search_youtube" => {
             let args: YtSearchArgs = deserialize(payload)?;
             let query = args.query.clone();

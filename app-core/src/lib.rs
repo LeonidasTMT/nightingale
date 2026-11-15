@@ -92,8 +92,8 @@ pub use vendor::{
     step_install_python,
 };
 pub use yt_import::{
-    YtImportPhase, YtImportProgress, YtSearchResult, YtSubLanguage, import_youtube, search_youtube,
-    youtube_subtitle_languages,
+    YtCookieStatus, YtImportPhase, YtImportProgress, YtSearchResult, YtSubLanguage,
+    import_youtube, search_youtube, yt_cookie_status, youtube_subtitle_languages,
 };
 
 pub fn startup() -> Result<(), String> {
