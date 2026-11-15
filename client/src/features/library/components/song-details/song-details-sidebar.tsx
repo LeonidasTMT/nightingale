@@ -7,6 +7,7 @@ import { useAddPlaybackQueueEntry } from '@/features/playback-queue/use-playback
 import { MultiplayerSetupDialog } from '@/features/playback/components/dialogs/multiplayer-setup';
 import { usePlaybackLauncher } from '@/features/playback/hooks/use-playback-launcher';
 import { usePreparePlaybackMutation } from '@/features/playback/mutations/use-prepare-playback-mutation';
+import { useBestHighwayScoresBySongForActiveProfile } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { useBestScoresBySongForActiveProfile } from '@/features/profiles/hooks/use-best-scores-by-song';
 import { t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
@@ -73,6 +74,7 @@ function AddToQueueButton({ song, tempo, keyOffset, ready, preparing }: AddToQue
 export const SongDetailsSidebar = ({ song, queueStatus, onClose }: SongDetailsSidebarProps) => {
   const queryClient = useQueryClient();
   const bestScores = useBestScoresBySongForActiveProfile();
+  const highwayBests = useBestHighwayScoresBySongForActiveProfile();
   const { detailsRef, closeDetails } = useSongDetailsNav(onClose);
   const { mutate: preparePlayback, isLoading: preparingPlayback } = usePreparePlaybackMutation();
   const { launch, reserveTarget } = usePlaybackLauncher();
@@ -139,6 +141,7 @@ export const SongDetailsSidebar = ({ song, queueStatus, onClose }: SongDetailsSi
         song={song}
         queueStatus={queueStatus}
         bestScore={bestScores.get(song.file_hash)}
+        highwayBest={highwayBests.get(song.file_hash)}
         onClose={closeDetails}
       />
 

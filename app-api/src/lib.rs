@@ -398,6 +398,20 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
             store.add_score(&args.song_hash, args.score, args.profile.as_deref());
             Ok(Value::Null)
         }
+        "add_highway_score" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                song_hash: String,
+                points: u32,
+                grade: String,
+                profile: Option<String>,
+            }
+            let args: Args = deserialize(payload)?;
+            let mut store = ProfileStore::load();
+            store.add_highway_score(&args.song_hash, args.points, args.grade, args.profile.as_deref());
+            Ok(Value::Null)
+        }
 
         // ── Playback queue ───────────────────────────────────────────────
         "load_playback_queue" => {

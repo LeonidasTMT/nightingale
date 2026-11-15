@@ -1,3 +1,4 @@
+import { useBestHighwayScoresBySongForActiveProfile } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { useBestScoresBySongForActiveProfile } from '@/features/profiles/hooks/use-best-scores-by-song';
 import type { Song } from '@/types/Song';
 
@@ -13,6 +14,7 @@ type SongGridProps = {
 
 export const SongGrid = ({ songs, getItemProps, actions }: SongGridProps) => {
   const bestScores = useBestScoresBySongForActiveProfile();
+  const highwayBests = useBestHighwayScoresBySongForActiveProfile();
 
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-3 p-1">
@@ -22,6 +24,7 @@ export const SongGrid = ({ songs, getItemProps, actions }: SongGridProps) => {
             {...getItemProps(song, index)}
             actions={actions}
             bestScore={bestScores.get(song.file_hash)}
+            highwayBest={highwayBests.get(song.file_hash)}
           />
         </li>
       ))}

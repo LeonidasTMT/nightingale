@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import type { BestHighwayScore } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { type TranslationKey } from '@/i18n';
 import { Stars } from '@/shared/components/shared/stars';
 import { formatSeconds } from '@/shared/utils/format-duration';
@@ -8,10 +9,17 @@ import type { Song } from '@/types/Song';
 import type { SongSortColumn } from '@/types/SongSortColumn';
 
 import { AlbumArt } from '../song/album-art';
+import { HighwayBestBadge } from '../song/highway-best-badge';
 import { LanguageBadge, NgeBadge } from '../song/language-badge';
 import { SongQuickActions } from '../song/song-quick-actions';
 import { StatusBadge } from '../song/status-badge';
 import type { SongListActions } from './types';
+
+/** Per-song data handed to every cell. */
+type SongCellContext = {
+  bestScore?: number;
+  highwayBest?: BestHighwayScore;
+};
 
 export type SongColumn = {
   id: string;
@@ -23,7 +31,7 @@ export type SongColumn = {
   cell: (
     song: Song,
     queueStatus?: QueuedStatus,
-    bestScore?: number,
+    ctx?: SongCellContext,
     actions?: SongListActions,
   ) => ReactNode;
 };
@@ -50,16 +58,27 @@ export const SONG_COLUMNS: SongColumn[] = [
     sortColumn: 'title',
     thClassName: 'song-table-song px-2 py-2 font-medium',
     tdClassName: 'song-table-song px-2 py-2 align-middle font-medium',
-    cell: (song, _queueStatus, bestScore) => (
-      <div className="min-w-0">
-        <div className="flex h-5 min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate leading-5">{song.title}</span>
-          <LanguageBadge language={song.language} />
-          <NgeBadge song={song} />
+    cell: (song, _queueStatus, ctx) => {
+      const bestScore = ctx?.bestScore;
+      const highwayBest = ctx?.highwayBest;
+      return (
+        <div className="min-w-0">
+          <div className="flex h-5 min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate leading-5">{song.title}</span>
+            <LanguageBadge language={song.language} />
+            <NgeBadge song={song} />
+          </div>
+          {bestScore === undefined && highwayBest === undefined ? null : (
+            <div className="mt-0.5 flex items-center gap-2">
+              {bestScore !== undefined ? (
+                <Stars score={bestScore} size="sm" className="shrink-0" />
+              ) : null}
+              {highwayBest !== undefined ? <HighwayBestBadge best={highwayBest} /> : null}
+            </div>
+          )}
         </div>
-        {bestScore === undefined ? null : <Stars score={bestScore} size="sm" className="mt-0.5" />}
-      </div>
-    ),
+      );
+    },
   },
   {
     id: 'band',
@@ -100,7 +119,7 @@ export const SONG_COLUMNS: SongColumn[] = [
     headerClassName: 'sr-only',
     thClassName: 'song-table-actions px-2 py-2',
     tdClassName: 'song-table-actions px-2 py-2 text-right',
-    cell: (song, queueStatus, _bestScore, actions) =>
+    cell: (song, queueStatus, _ctx, actions) =>
       actions === undefined ? null : (
         <SongQuickActions song={song} queueStatus={queueStatus} {...actions} />
       ),

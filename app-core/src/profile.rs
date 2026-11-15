@@ -12,6 +12,18 @@ pub struct ScoreRecord {
     pub played_at: u64,
 }
 
+/// One Note Highway (vocal trainer) run: arcade points plus the letter
+/// grade computed against the best score attainable by that moment.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HighwayScoreRecord {
+    pub profile: String,
+    pub song_hash: String,
+    pub points: u32,
+    pub grade: String,
+    pub played_at: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[ts(export)]
 pub struct ProfileStore {
@@ -19,6 +31,8 @@ pub struct ProfileStore {
     pub profiles: Vec<String>,
     #[serde(default)]
     pub scores: Vec<ScoreRecord>,
+    #[serde(default)]
+    pub highway_scores: Vec<HighwayScoreRecord>,
 }
 
 impl ProfileStore {
@@ -70,6 +84,8 @@ impl ProfileStore {
 
         self.scores.retain(|r| r.profile != name);
 
+        self.highway_scores.retain(|r| r.profile != name);
+
         if self.active.as_deref() == Some(name) {
             self.active = self.profiles.first().cloned();
         }
@@ -92,6 +108,33 @@ impl ProfileStore {
             profile,
             song_hash: song_hash.to_string(),
             score,
+            played_at,
+        });
+        self.save();
+    }
+
+    pub fn add_highway_score(
+        &mut self,
+        song_hash: &str,
+        points: u32,
+        grade: String,
+        profile: Option<&str>,
+    ) {
+        let profile = match profile.or(self.active.as_deref()) {
+            Some(profile) if self.profiles.iter().any(|candidate| candidate == profile) => {
+                profile.to_string()
+            }
+            _ => return,
+        };
+        let played_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.highway_scores.push(HighwayScoreRecord {
+            profile,
+            song_hash: song_hash.to_string(),
+            points,
+            grade,
             played_at,
         });
         self.save();

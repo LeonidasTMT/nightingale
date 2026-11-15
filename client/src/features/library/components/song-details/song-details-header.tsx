@@ -1,5 +1,6 @@
 import { XIcon } from 'lucide-react';
 
+import type { BestHighwayScore } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { t } from '@/i18n';
 import { Stars } from '@/shared/components/shared/stars';
 import { Button } from '@/shared/components/ui/button';
@@ -8,6 +9,7 @@ import type { QueuedStatus } from '@/types/QueuedStatus';
 import type { Song } from '@/types/Song';
 
 import { AlbumArt } from '../song/album-art';
+import { HighwayBestBadge } from '../song/highway-best-badge';
 import { LanguageBadge, NgeBadge, isDisplayableLanguage } from '../song/language-badge';
 import { StatusBadge } from '../song/status-badge';
 
@@ -15,6 +17,7 @@ type SongDetailsHeaderProps = {
   song: Song;
   queueStatus?: QueuedStatus;
   bestScore?: number;
+  highwayBest?: BestHighwayScore;
   onClose: () => void;
 };
 
@@ -22,6 +25,7 @@ export const SongDetailsHeader = ({
   song,
   queueStatus,
   bestScore,
+  highwayBest,
   onClose,
 }: SongDetailsHeaderProps) => (
   <header className="relative border-b px-4 pb-4 pt-3">
@@ -53,7 +57,14 @@ export const SongDetailsHeader = ({
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
           {song.album || t('library.songDetails.unknownAlbum')}
         </p>
-        {bestScore === undefined ? null : <Stars score={bestScore} size="sm" className="mt-1" />}
+        {bestScore === undefined && highwayBest === undefined ? null : (
+          <div className="mt-1 flex items-center gap-2">
+            {bestScore !== undefined ? (
+              <Stars score={bestScore} size="sm" className="shrink-0" />
+            ) : null}
+            {highwayBest !== undefined ? <HighwayBestBadge best={highwayBest} /> : null}
+          </div>
+        )}
       </div>
     </div>
 

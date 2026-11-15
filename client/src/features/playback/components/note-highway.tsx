@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { addHighwayScore } from '@/bridge/profile';
 import { clampPlaybackScale } from '@/features/playback/lib/display-scale';
 import type { PitchSeries } from '@/features/playback/lib/pitch/state';
 import { freqToSemitone } from '@/features/playback/lib/pitch/state';
-import { usePlaybackTransportActions } from '@/features/playback/providers';
+import {
+  usePlaybackTransportActions,
+  usePlaybackTransportState,
+  usePlaybackTranscriptState,
+} from '@/features/playback/providers';
 import type { Melody, MelodyNote } from '@/types/Melody';
 import type { Song } from '@/types/Song';
 
@@ -83,6 +88,10 @@ type GameState = {
   shownScore: number;
   combo: number;
   bestCombo: number;
+  /** Best score still attainable from the samples seen so far (all PERFECT run). */
+  maxEarnable: number;
+  /** Combo an all-PERFECT player would have after each judged sample. */
+  perfectCombo: number;
   /** Playback time of the last judged sample (the buffer is a shifting ring). */
   lastT: number;
   lastJudgePopupAt: number;
@@ -99,6 +108,8 @@ function newGame(songKey: string): GameState {
     shownScore: 0,
     combo: 0,
     bestCombo: 0,
+    maxEarnable: 0,
+    perfectCombo: 0,
     lastT: -Infinity,
     lastJudgePopupAt: -Infinity,
     lastMissPopupAt: -Infinity,
@@ -174,9 +185,17 @@ function comboMultiplier(combo: number): number {
 
 type Grade = { letter: string; color: Rgb };
 
+/**
+ * Letter grade for a ratio of earned points over the best score attainable
+ * at that moment (never the whole-song maximum, so the badge stays honest
+ * mid-song).
+ */
 function liveGrade(score: number | null): Grade | null {
   if (score === null || score <= 0) {
     return null;
+  }
+  if (score >= 0.97) {
+    return { letter: 'SSS', color: PERFECT_COLOR };
   }
   if (score >= 0.92) {
     return { letter: 'S', color: PERFECT_COLOR };
@@ -262,8 +281,6 @@ export type NoteHighwayProps = {
   melody: Melody | null;
   song: Song;
   series: PitchSeries;
-  /** Overall pitch score in [0, 1] for the live grade badge. */
-  score?: number | null;
   position?: 'top' | 'bottom';
   scale?: number | null;
 };
@@ -272,7 +289,6 @@ export function NoteHighway({
   melody,
   song,
   series,
-  score = null,
   position = 'top',
   scale = 1,
 }: NoteHighwayProps) {
@@ -286,14 +302,35 @@ export function NoteHighway({
   // Latest values read by the rAF loop without restarting it.
   const seriesRef = useRef<PitchSeries>(series);
   const timeFnRef = useRef(getCurrentTime);
-  const scoreRef = useRef(score);
   const gameRef = useRef<GameState | null>(null);
 
   useEffect(() => {
     seriesRef.current = series;
     timeFnRef.current = getCurrentTime;
-    scoreRef.current = score;
   });
+
+  // Persist the run when the song finishes (or the outro is skipped): the
+  // best arcade result per song + active profile, graded against the best
+  // score attainable at that moment.
+  const { isFinished } = usePlaybackTransportState();
+  const { skipOutroPending } = usePlaybackTranscriptState();
+  const savedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isFinished && !skipOutroPending) {
+      return;
+    }
+    const game = gameRef.current;
+    if (savedRef.current || game === null || game.score <= 0) {
+      return;
+    }
+    savedRef.current = true;
+    const ratio = game.maxEarnable > 0 ? game.score / game.maxEarnable : 0;
+    const grade = liveGrade(ratio);
+    if (grade !== null) {
+      void addHighwayScore(song.file_hash, Math.floor(game.score), grade.letter);
+    }
+  }, [isFinished, skipOutroPending, song.file_hash]);
 
   const tempo = song.tempo > 0 ? song.tempo : 1;
   const keyShift = song.override_key === null ? 0 : song.key_offset;
@@ -334,9 +371,10 @@ export function NoteHighway({
         if (notes.length > 0) {
           const songKey = `${song.title}|${song.artist}`;
           const existing = gameRef.current;
-          const game =
-            existing !== null && existing.songKey === songKey ? existing : newGame(songKey);
+          const isNewGame = existing === null || existing.songKey !== songKey;
+          const game = isNewGame ? newGame(songKey) : existing;
           gameRef.current = game;
+          savedRef.current = isNewGame ? false : savedRef.current;
 
           const semiPx = layout.plotH / (layout.hi - layout.lo);
           const scaleF = clampPlaybackScale(scale);
@@ -399,6 +437,10 @@ export function NoteHighway({
             if (target === null) {
               return; // intro/outro: no judgment, no combo change
             }
+            // This sample IS judgeable, so an all-PERFECT run would score on
+            // it too: grow the progressive maximum by exactly that.
+            game.perfectCombo += 1;
+            game.maxEarnable += 300 * comboMultiplier(game.perfectCombo);
             if (hz === null) {
               // Silence only counts as a miss while inside a note; breaths
               // before/after phrases are not penalized.
@@ -464,6 +506,9 @@ export function NoteHighway({
               game.shownScore = 0;
               game.combo = 0;
               game.bestCombo = 0;
+              game.maxEarnable = 0;
+              game.perfectCombo = 0;
+              savedRef.current = false;
               game.popups.length = 0;
               game.bursts.length = 0;
             }
@@ -652,7 +697,8 @@ export function NoteHighway({
             if (Math.abs(game.score - game.shownScore) < 1) {
               game.shownScore = game.score;
             }
-            const grade = liveGrade(scoreRef.current);
+            const ratio = game.maxEarnable > 0 ? game.score / game.maxEarnable : null;
+            const grade = liveGrade(ratio);
             ctx.font = `bold ${Math.max(11, 13 * scaleF)}px ui-monospace, monospace`;
             const scoreText = `${grade !== null ? grade.letter + '  ' : ''}${Math.floor(game.shownScore).toLocaleString()}`;
             ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';

@@ -249,7 +249,6 @@ function PlaybackLayout({
         melody={melody}
         song={song}
         series={mic.series}
-        score={mic.pitchScore}
         position={hudPosition}
         scale={pitchGraphScale}
       />

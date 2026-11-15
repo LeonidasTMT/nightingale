@@ -1,5 +1,6 @@
 import { memo, type KeyboardEvent } from 'react';
 
+import type { BestHighwayScore } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { cn } from '@/shared/utils/cn';
 
 import { SONG_COLUMNS } from '../song-columns';
@@ -7,6 +8,7 @@ import type { SongItemProps, SongListActions } from '../types';
 
 type SongTableRowProps = {
   bestScore?: number;
+  highwayBest?: BestHighwayScore;
   actions: SongListActions;
 } & SongItemProps;
 
@@ -19,6 +21,7 @@ export const SongTableRow = memo(
     isSelected,
     onSelect,
     bestScore,
+    highwayBest,
     actions,
   }: SongTableRowProps) => {
     const onKeyDown = (event: KeyboardEvent<HTMLTableRowElement>) => {
@@ -43,7 +46,7 @@ export const SongTableRow = memo(
       >
         {SONG_COLUMNS.map((column) => (
           <td key={column.id} className={column.tdClassName}>
-            {column.cell(song, queueStatus, bestScore, actions)}
+            {column.cell(song, queueStatus, { bestScore, highwayBest }, actions)}
           </td>
         ))}
       </tr>

@@ -1,5 +1,6 @@
 import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon } from 'lucide-react';
 
+import { useBestHighwayScoresBySongForActiveProfile } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { useBestScoresBySongForActiveProfile } from '@/features/profiles/hooks/use-best-scores-by-song';
 import { t } from '@/i18n';
 import { cn } from '@/shared/utils/cn';
@@ -92,6 +93,7 @@ export const SongTable = ({
   actions,
 }: SongTableProps) => {
   const bestScores = useBestScoresBySongForActiveProfile();
+  const highwayBests = useBestHighwayScoresBySongForActiveProfile();
 
   return (
     <table className="w-full border-separate border-spacing-0 text-xs">
@@ -115,6 +117,7 @@ export const SongTable = ({
             {...getItemProps(song, index)}
             actions={actions}
             bestScore={bestScores.get(song.file_hash)}
+            highwayBest={highwayBests.get(song.file_hash)}
           />
         ))}
       </tbody>

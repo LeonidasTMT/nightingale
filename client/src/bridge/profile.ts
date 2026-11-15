@@ -25,3 +25,11 @@ export const addScore = async (
 ): Promise<void> => {
   return await invoke<void>('add_score', { songHash, score, profile });
 };
+
+export const addHighwayScore = async (
+  songHash: string,
+  points: number,
+  grade: string,
+): Promise<void> => {
+  return await invoke<void>('add_highway_score', { songHash, points, grade });
+};

@@ -1,11 +1,13 @@
 import { memo } from 'react';
 
+import type { BestHighwayScore } from '@/features/profiles/hooks/use-best-highway-scores-by-song';
 import { t, useTranslation } from '@/i18n';
 import { Stars } from '@/shared/components/shared/stars';
 import { cn } from '@/shared/utils/cn';
 import { formatSeconds } from '@/shared/utils/format-duration';
 
 import { AlbumArt } from '../../song/album-art';
+import { HighwayBestBadge } from '../../song/highway-best-badge';
 import { LanguageBadge, NgeBadge } from '../../song/language-badge';
 import { SongQuickActions } from '../../song/song-quick-actions';
 import { StatusBadge } from '../../song/status-badge';
@@ -13,6 +15,7 @@ import type { SongItemProps, SongListActions } from '../types';
 
 type SongGridCardProps = {
   bestScore?: number;
+  highwayBest?: BestHighwayScore;
   actions: SongListActions;
 } & SongItemProps;
 
@@ -25,6 +28,7 @@ export const SongGridCard = memo(
     isSelected,
     onSelect,
     bestScore,
+    highwayBest,
     actions,
   }: SongGridCardProps) => {
     useTranslation();
@@ -61,7 +65,14 @@ export const SongGridCard = memo(
           </div>
           <p className="mt-1 truncate text-xs text-muted-foreground">{song.artist || '—'}</p>
           <p className="truncate text-xs text-muted-foreground">{song.album || '—'}</p>
-          {bestScore === undefined ? null : <Stars score={bestScore} size="sm" className="mt-1" />}
+          {bestScore === undefined && highwayBest === undefined ? null : (
+            <div className="mt-1 flex items-center gap-2">
+              {bestScore !== undefined ? (
+                <Stars score={bestScore} size="sm" className="shrink-0" />
+              ) : null}
+              {highwayBest !== undefined ? <HighwayBestBadge best={highwayBest} /> : null}
+            </div>
+          )}
           <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-2">
             <span className="text-xs tabular-nums text-muted-foreground">
               {formatSeconds(song.duration_secs)}

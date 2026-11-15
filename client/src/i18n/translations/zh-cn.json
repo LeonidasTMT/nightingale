@@ -171,6 +171,7 @@
   "library.songDetails.songDetailsSidebar.songDetails": "歌曲详情",
   "library.songDetails.unknownAlbum": "未知专辑",
   "library.songDetails.unknownBand": "未知乐队",
+  "library.songList.highwayBestTooltip": "音符高速公路最佳成绩：{{grade}} · {{points}} 分",
   "library.songList.noResults": "没有结果",
   "library.songList.noResultsDescription": "没有歌曲符合搜索或筛选条件。请尝试调整。",
   "library.songList.noSongs": "未找到歌曲",
