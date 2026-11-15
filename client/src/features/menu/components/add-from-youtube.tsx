@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import {
+  fetchYtSubtitleLanguages,
   importYouTube,
   onYtImportDone,
   onYtImportError,
@@ -23,16 +24,30 @@ import {
 import { Input } from '@/shared/components/ui/input';
 import { Progress } from '@/shared/components/ui/progress';
 import { ScrollArea } from '@/shared/components/ui/scroll-area';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/shared/components/ui/select';
 import { ANALYSIS_QUEUE, MENU, SONGS, SONGS_META } from '@/shared/query-keys';
 import type { YtImportProgress } from '@/types/YtImportProgress';
 import type { YtSearchResult } from '@/types/YtSearchResult';
+import type { YtSubLanguage } from '@/types/YtSubLanguage';
 
-type View = 'search' | 'results' | 'importing' | 'error';
+type View = 'search' | 'results' | 'confirm' | 'importing' | 'error';
 
 type Flow = {
   view: View;
   query: string;
   results: YtSearchResult[];
+  confirmInput: string;
+  /** null while the caption list is loading (or if it failed). */
+  langs: YtSubLanguage[] | null;
+  /** 'auto' or one of the available language codes. */
+  selectedLang: string;
   progress: YtImportProgress | null;
   error: string;
   busy: boolean;
@@ -42,6 +57,9 @@ const INITIAL_FLOW: Flow = {
   view: 'search',
   query: '',
   results: [],
+  confirmInput: '',
+  langs: null,
+  selectedLang: 'auto',
   progress: null,
   error: '',
   busy: false,
@@ -112,8 +130,32 @@ const useAddFromYoutubeFlow = (open: boolean) => {
     }
   }, []);
 
+  const openConfirm = useCallback((input: string) => {
+    setFlow((f) => ({
+      ...f,
+      view: 'confirm',
+      confirmInput: input,
+      langs: null,
+      selectedLang: 'auto',
+      error: '',
+    }));
+    // Best-effort: if the list fails, the import still works with Auto.
+    void (async () => {
+      try {
+        const langs = await fetchYtSubtitleLanguages(input);
+        setFlow((f) => (f.view === 'confirm' && f.confirmInput === input ? { ...f, langs } : f));
+      } catch {
+        // No caption list; Auto still works.
+      }
+    })();
+  }, []);
+
+  const setSelectedLang = useCallback((lang: string) => {
+    setFlow((f) => ({ ...f, selectedLang: lang }));
+  }, []);
+
   const startImport = useCallback(
-    async (input: string) => {
+    async (input: string, captionLang?: string) => {
       // Subscribe before invoking so no progress event can be missed.
       const unsubs = await Promise.all([
         onYtImportProgress((progress) => setFlow((f) => ({ ...f, progress }))),
@@ -131,7 +173,7 @@ const useAddFromYoutubeFlow = (open: boolean) => {
 
       setFlow((f) => ({ ...f, view: 'importing', progress: null }));
       try {
-        await importYouTube(input);
+        await importYouTube(input, captionLang);
       } catch (error: unknown) {
         setFlow((f) => ({ ...f, error: errorMessage(error), view: 'error' }));
       }
@@ -143,11 +185,24 @@ const useAddFromYoutubeFlow = (open: boolean) => {
     setFlow((f) => ({ ...f, view: 'search', error: '' }));
   }, []);
 
+  const backFromConfirm = useCallback(() => {
+    setFlow((f) => ({ ...f, view: f.results.length > 0 ? 'results' : 'search', error: '' }));
+  }, []);
+
   const setQuery = useCallback((value: string) => {
     setFlow((f) => ({ ...f, query: value }));
   }, []);
 
-  return { flow, runSearch, startImport, backToSearch, setQuery };
+  return {
+    flow,
+    runSearch,
+    startImport,
+    openConfirm,
+    backToSearch,
+    backFromConfirm,
+    setSelectedLang,
+    setQuery,
+  };
 };
 
 type SearchViewProps = {
@@ -210,6 +265,81 @@ const SearchView = ({
     </>
   );
 };
+
+type ConfirmViewProps = {
+  input: string;
+  langs: YtSubLanguage[] | null;
+  selectedLang: string;
+  onLangChange: (lang: string) => void;
+  onImport: () => void;
+  onBack: () => void;
+};
+
+type CaptionPickerProps = {
+  langs: YtSubLanguage[] | null;
+  selectedLang: string;
+  onLangChange: (lang: string) => void;
+};
+
+const CaptionPicker = ({ langs, selectedLang, onLangChange }: CaptionPickerProps) => {
+  if (langs === null) {
+    return (
+      <p className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2Icon className="animate-spin" />
+        Loading caption languages…
+      </p>
+    );
+  }
+  if (langs.length === 0) {
+    return <p className="text-sm text-muted-foreground">No captions available for this video.</p>;
+  }
+  return (
+    <Select value={selectedLang} onValueChange={(lang) => onLangChange(lang)}>
+      <SelectTrigger id="youtube-import.captionLangSelect">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          <SelectItem value="auto">Auto — match the song language</SelectItem>
+          {langs.map((l) => (
+            <SelectItem key={l.lang} value={l.lang}>
+              {l.lang} ({l.source === 'manual' ? 'uploaded' : 'machine'})
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  );
+};
+
+const ConfirmView = ({
+  input,
+  langs,
+  selectedLang,
+  onLangChange,
+  onImport,
+  onBack,
+}: ConfirmViewProps) => (
+  <>
+    <DialogHeader>
+      <DialogTitle className="flex items-center gap-2">
+        <YoutubeIcon className="size-5" />
+        Import from YouTube
+      </DialogTitle>
+      <DialogDescription>{input}</DialogDescription>
+    </DialogHeader>
+    <div className="space-y-1.5">
+      <p className="text-sm text-muted-foreground">Captions (used as lyrics)</p>
+      <CaptionPicker langs={langs} selectedLang={selectedLang} onLangChange={onLangChange} />
+    </div>
+    <DialogFooter>
+      <Button variant="outline" onClick={onBack}>
+        Back
+      </Button>
+      <Button onClick={onImport}>Import</Button>
+    </DialogFooter>
+  </>
+);
 
 type ResultsViewProps = {
   query: string;
@@ -303,7 +433,16 @@ const ErrorView = ({ error, onRetry }: ErrorViewProps) => (
 export const AddFromYoutubeDialog = () => {
   const { mode, close } = useDialog();
   const open = mode === 'add-from-youtube';
-  const { flow, runSearch, startImport, backToSearch, setQuery } = useAddFromYoutubeFlow(open);
+  const {
+    flow,
+    runSearch,
+    startImport,
+    openConfirm,
+    backToSearch,
+    backFromConfirm,
+    setSelectedLang,
+    setQuery,
+  } = useAddFromYoutubeFlow(open);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -322,15 +461,30 @@ export const AddFromYoutubeDialog = () => {
             inputRef={inputRef}
             onQueryChange={setQuery}
             onSearch={(query) => void runSearch(query)}
-            onDirectImport={(input) => void startImport(input)}
+            onDirectImport={(input) => openConfirm(input)}
           />
         )}
         {flow.view === 'results' && (
           <ResultsView
             query={flow.query}
             results={flow.results}
-            onPick={(id) => void startImport(id)}
+            onPick={(id) => openConfirm(id)}
             onBack={backToSearch}
+          />
+        )}
+        {flow.view === 'confirm' && (
+          <ConfirmView
+            input={flow.confirmInput}
+            langs={flow.langs}
+            selectedLang={flow.selectedLang}
+            onLangChange={setSelectedLang}
+            onImport={() => {
+              void startImport(
+                flow.confirmInput,
+                flow.selectedLang === 'auto' ? undefined : flow.selectedLang,
+              );
+            }}
+            onBack={backFromConfirm}
           />
         )}
         {flow.view === 'importing' && <ImportingView progress={flow.progress} />}

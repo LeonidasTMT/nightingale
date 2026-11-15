@@ -895,6 +895,16 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
                 .map_err(ApiError::bad_request)?;
             Ok(serde_json::to_value(results).map_err(serde_err)?)
         }
+        "youtube_subtitle_languages" => {
+            let args: YtUrlArgs = deserialize(payload)?;
+            let url = args.url.clone();
+            let langs =
+                tokio::task::spawn_blocking(move || app_core::youtube_subtitle_languages(&url))
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?
+                    .map_err(ApiError::bad_request)?;
+            Ok(serde_json::to_value(langs).map_err(serde_err)?)
+        }
         "import_youtube" => import_youtube_cmd(events, payload),
 
         // ── Vendor ───────────────────────────────────────────────────────
@@ -932,19 +942,33 @@ struct YtSearchArgs {
     query: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YtUrlArgs {
+    url: String,
+}
+
 fn import_youtube_cmd(events: EventEmitter, payload: Value) -> CmdResult {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Args {
         input: String,
+        /// Caption language to use as lyrics; absent/"auto" lets the server
+        /// pick the track matching the audio.
+        #[serde(default)]
+        caption_lang: Option<String>,
     }
     let args: Args = deserialize(payload)?;
+    let caption_lang = args
+        .caption_lang
+        .filter(|l| l.trim() != "auto" && !l.trim().is_empty());
 
     std::thread::spawn(move || {
         let events_for_progress = events.clone();
-        let result = app_core::import_youtube(&args.input, move |progress| {
-            events_for_progress.emit("yt-import-progress", &progress)
-        });
+        let result =
+            app_core::import_youtube(&args.input, caption_lang.as_deref(), move |progress| {
+                events_for_progress.emit("yt-import-progress", &progress)
+            });
         match result {
             Ok(path) => events.emit_value(
                 "yt-import-done",

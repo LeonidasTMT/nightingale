@@ -27,8 +27,8 @@ mod yt_import;
 
 pub use analyzer::{
     AnalysisQueue, cancel_analysis, delete_cache, delete_songs, enqueue, realign,
-    reanalyze_force_transcribe,
-    reanalyze_full, reanalyze_transcript, refresh_metadata, shutdown_server,
+    reanalyze_force_transcribe, reanalyze_full, reanalyze_transcript, refresh_metadata,
+    shutdown_server,
 };
 pub use backgrounds::{
     BackgroundSelection, CustomBackground, CustomBackgroundKind, CustomBackgroundSource,
@@ -58,8 +58,7 @@ pub use playback::{
     AudioPaths, PixabayVideoDownloaded, ShiftDone, ShiftResult, StemsReady,
     download_pixabay_videos, ensure_mp3_stems, ensure_mp3_stems_ready_payload,
     ensure_playable_source_video, get_audio_paths, get_cached_pixabay_videos, load_melody,
-    load_transcript,
-    prefetch_one_per_flavor, shift_key, shift_key_done_payload, shift_tempo,
+    load_transcript, prefetch_one_per_flavor, shift_key, shift_key_done_payload, shift_tempo,
     shift_tempo_done_payload,
 };
 pub use playback_queue::{PlaybackQueue, PlaybackQueueEntry};
@@ -93,7 +92,8 @@ pub use vendor::{
     step_install_python,
 };
 pub use yt_import::{
-    YtImportPhase, YtImportProgress, YtSearchResult, import_youtube, search_youtube,
+    YtImportPhase, YtImportProgress, YtSearchResult, YtSubLanguage, import_youtube, search_youtube,
+    youtube_subtitle_languages,
 };
 
 pub fn startup() -> Result<(), String> {

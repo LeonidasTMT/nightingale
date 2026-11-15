@@ -19,6 +19,10 @@ pub(crate) struct LrcWord {
     pub word: String,
     pub start: f64,
     pub end: f64,
+    /// Romanized reading (romaji/hangul romanization/...) shown under the
+    /// word. Absent for words without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +44,9 @@ struct RawEntry {
     text: String,
     /// `Some` when the line was enhanced (word tokens parsed from `<...>` tags).
     word_tokens: Option<Vec<(f64, String)>>,
+    /// Romanized reading for the whole line, from a `;reading` line directly
+    /// below it.
+    reading: Option<String>,
 }
 
 /// Parse a fractional part expressed as decimal digits (e.g. `"45"` -> 0.45).
@@ -160,6 +167,9 @@ pub(crate) fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
     // segment; they mark where the previous line's highlight should stop.
     let mut breaks: Vec<f64> = Vec::new();
     let mut offset_secs = 0.0;
+    // Index of the first entry of the last timestamped line, so a `;reading`
+    // line right below it can be attached to every copy of that line.
+    let mut last_line_start: Option<usize> = None;
 
     for raw_line in text.lines() {
         let (timestamps, content, offset_ms) = split_line(raw_line);
@@ -167,8 +177,19 @@ pub(crate) fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
             offset_secs = ms / 1000.0;
         }
         if timestamps.is_empty() {
+            // A `;reading` line directly under a lyric line carries that
+            // line's romanized reading (imported captions write one).
+            if let Some(start) = last_line_start.take()
+                && let Some(reading_text) = content.strip_prefix(';').map(str::trim)
+                && !reading_text.is_empty()
+            {
+                for entry in &mut entries[start..] {
+                    entry.reading = Some(reading_text.to_string());
+                }
+            }
             continue;
         }
+        last_line_start = Some(entries.len());
         if content.trim().is_empty() {
             for ts in &timestamps {
                 breaks.push((ts + offset_secs).max(0.0));
@@ -202,6 +223,7 @@ pub(crate) fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
                 start: (ts + offset_secs).max(0.0),
                 text: display_text.clone(),
                 word_tokens: word_tokens.clone(),
+                reading: None,
             });
         }
     }
@@ -245,6 +267,7 @@ pub(crate) fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
                         word: word.clone(),
                         start,
                         end,
+                        reading: None,
                     });
                 }
                 words
@@ -253,6 +276,7 @@ pub(crate) fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
                 word: entry.text.clone(),
                 start: seg_start,
                 end: seg_end,
+                reading: entry.reading.clone(),
             }],
         };
 
@@ -265,4 +289,50 @@ pub(crate) fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
     }
 
     Ok(ParsedLrc { segments })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_line_attaches_to_word() {
+        let parsed =
+            parse_lrc("[00:01.00]Hello\n;hello romaji\n[00:02.00]World").expect("lrc parses");
+        assert_eq!(parsed.segments.len(), 2);
+        assert_eq!(
+            parsed.segments[0].words[0].reading.as_deref(),
+            Some("hello romaji")
+        );
+        assert_eq!(parsed.segments[1].words[0].reading, None);
+    }
+
+    #[test]
+    fn reading_line_applies_to_all_timestamp_copies() {
+        let parsed = parse_lrc("[00:01.00][01:01.00]Chorus\n;ro ma ji").expect("lrc parses");
+        assert_eq!(parsed.segments.len(), 2);
+        for seg in &parsed.segments {
+            assert_eq!(seg.words[0].reading.as_deref(), Some("ro ma ji"));
+        }
+    }
+
+    #[test]
+    fn reading_line_without_preceding_lyric_is_ignored() {
+        let parsed = parse_lrc(";leading comment\n[00:01.00]Line").expect("lrc parses");
+        assert_eq!(parsed.segments[0].words[0].reading, None);
+    }
+
+    #[test]
+    fn enhanced_line_ignores_reading() {
+        let parsed = parse_lrc("[00:01.00]<00:01.00>a <00:01.5>b\n;read me").expect("lrc parses");
+        assert!(parsed.segments[0].words.iter().all(|w| w.reading.is_none()));
+    }
+
+    #[test]
+    fn reading_serializes_only_when_present() {
+        let parsed = parse_lrc("[00:01.00]A\n;aa\n[00:02.00]B").expect("lrc parses");
+        let json = serde_json::to_string(&parsed.segments).expect("serialization succeeds");
+        assert_eq!(json.matches("\"reading\"").count(), 1);
+        assert!(json.contains("\"reading\":\"aa\""));
+    }
 }

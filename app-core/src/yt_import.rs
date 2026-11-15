@@ -23,7 +23,7 @@ use crate::{
     lyrics::provide_lrc,
     scanner::start_scan,
     song::Song,
-    vendor::{ffmpeg_path, python_path, silent_command, uv_path},
+    vendor::{analyzer_dir, ffmpeg_path, python_path, silent_command, uv_path},
 };
 
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(90);
@@ -121,15 +121,7 @@ fn cookie_file_args() -> Option<Vec<String>> {
 
 /// Browsers yt-dlp's `--cookies-from-browser` accepts (v2026.x).
 const KNOWN_BROWSERS: [&str; 9] = [
-    "brave",
-    "chrome",
-    "chromium",
-    "edge",
-    "firefox",
-    "opera",
-    "safari",
-    "vivaldi",
-    "whale",
+    "brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale",
 ];
 
 /// One installed browser's cookie stores, probed for a YouTube login.
@@ -173,12 +165,11 @@ fn detect_cookie_browser() -> Option<String> {
     let probes = cookie_probes();
     // Prefer a browser that actually holds youtube.com cookies (logged-in
     // session); otherwise fall back to the first installed browser at all.
-    probes.iter().find(|p| p.yt_profile.is_some()).or_else(|| {
-        probes
-            .iter()
-            .find(|p| !p.cookie_files.is_empty())
-    })
-    .map(BrowserProbe::spec)
+    probes
+        .iter()
+        .find(|p| p.yt_profile.is_some())
+        .or_else(|| probes.iter().find(|p| !p.cookie_files.is_empty()))
+        .map(BrowserProbe::spec)
 }
 
 /// Chromium-family cookie DBs under `<root>/<profile>/Cookies` or the newer
@@ -237,10 +228,8 @@ fn cookie_probes() -> Vec<BrowserProbe> {
 
     #[cfg(windows)]
     {
-        if let (Ok(local), Ok(home)) = (
-            std::env::var("LOCALAPPDATA"),
-            std::env::var("USERPROFILE"),
-        ) {
+        if let (Ok(local), Ok(home)) = (std::env::var("LOCALAPPDATA"), std::env::var("USERPROFILE"))
+        {
             for (name, vendor) in [
                 ("edge", PathBuf::from("Microsoft/Edge")),
                 ("chrome", PathBuf::from("Google/Chrome")),
@@ -252,9 +241,9 @@ fn cookie_probes() -> Vec<BrowserProbe> {
             }
             // Opera keeps profiles under `user_windows`; very old installs use
             // a single `Opera Stable` profile dir (cookie DB at its root).
-            let mut opera = chromium_cookie_files(&Path::new(&home).join(
-                "AppData/Roaming/Opera Software/user_windows",
-            ));
+            let mut opera = chromium_cookie_files(
+                &Path::new(&home).join("AppData/Roaming/Opera Software/user_windows"),
+            );
             if opera.is_empty() {
                 let stable = Path::new(&home).join("AppData/Roaming/Opera Software/Opera Stable");
                 for rel in ["Network/Cookies", "Cookies"] {
@@ -303,9 +292,30 @@ fn cookie_probes() -> Vec<BrowserProbe> {
             #[cfg(not(target_os = "macos"))]
             let base = Path::new(&home).join(".config");
             for (name, dir) in [
-                ("edge", PathBuf::from(if cfg!(target_os = "macos") { "Microsoft Edge" } else { "microsoft-edge" })),
-                ("chrome", PathBuf::from(if cfg!(target_os = "macos") { "Google/Chrome" } else { "google-chrome" })),
-                ("brave", PathBuf::from(if cfg!(target_os = "macos") { "BraveSoftware/Brave Browser" } else { "brave-browser" })),
+                (
+                    "edge",
+                    PathBuf::from(if cfg!(target_os = "macos") {
+                        "Microsoft Edge"
+                    } else {
+                        "microsoft-edge"
+                    }),
+                ),
+                (
+                    "chrome",
+                    PathBuf::from(if cfg!(target_os = "macos") {
+                        "Google/Chrome"
+                    } else {
+                        "google-chrome"
+                    }),
+                ),
+                (
+                    "brave",
+                    PathBuf::from(if cfg!(target_os = "macos") {
+                        "BraveSoftware/Brave Browser"
+                    } else {
+                        "brave-browser"
+                    }),
+                ),
                 ("chromium", PathBuf::from("Chromium")),
                 ("vivaldi", PathBuf::from("Vivaldi")),
                 ("opera", PathBuf::from("opera")),
@@ -366,17 +376,10 @@ fn ensure_yt_dlp() -> Result<(), String> {
     Ok(())
 }
 
-/// Pick the caption language that matches the audio itself.
-///
-/// YouTube auto-generates captions in the spoken language and offers machine
-/// translations of them. In yt-dlp's info, translated tracks carry a `tlang`
-/// query param while the original track does not, so the first auto-caption
-/// without one is the right language. Falls back to any manual subtitle.
-fn pick_caption_language(url: &str) -> Option<String> {
-    let mut args: Vec<String> = vec![
-        "--skip-download".into(),
-        "--no-playlist".into(),
-    ];
+/// Fetch yt-dlp's info JSON for a video URL. Best-effort: `None` on any
+/// failure so callers can fall back gracefully.
+fn fetch_video_info(url: &str) -> Option<Value> {
+    let mut args: Vec<String> = vec!["--skip-download".into(), "--no-playlist".into()];
     for arg in yt_cookies_args() {
         args.push(arg);
     }
@@ -384,21 +387,50 @@ fn pick_caption_language(url: &str) -> Option<String> {
     args.push(url.to_string());
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-    let output = match run_yt_dlp_capture(&args_refs, Duration::from_secs(300)) {
-        Ok(out) if out.status.success() => out,
-        _ => return None,
-    };
-    let info: Value = match serde_json::from_slice(&output.stdout) {
-        Ok(v) => v,
+    let output = run_yt_dlp_capture(&args_refs, Duration::from_secs(300)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    match serde_json::from_slice::<Value>(&output.stdout) {
+        Ok(v) => Some(v),
         Err(e) => {
-            tracing::warn!("pick_caption_language: bad info json: {e}");
-            return None;
+            tracing::warn!("fetch_video_info: bad info json: {e}");
+            None
         }
-    };
+    }
+}
+
+/// Pick the caption language that matches the audio itself.
+///
+/// YouTube serves machine-translated auto-captions alongside the original
+/// track, and in current yt-dlp output they are indistinguishable (no `tlang`
+/// marker) with arbitrary track order — so the first track is often a
+/// translation (e.g. Chinese for a Japanese song). We therefore derive the
+/// expected spoken language from the video itself (title/description script,
+/// then channel country) and prefer a matching track; only when no signal
+/// exists do we fall back to the first auto-caption / manual subtitle.
+fn pick_caption_language(url: &str) -> Option<String> {
+    let info = fetch_video_info(url)?;
+
+    // 0) A track matching the expected spoken language (auto first, then
+    // manual). Exact match before primary-subtag prefix (ja ~ ja-JP).
+    if let Some(exp) = expected_caption_language(&info) {
+        for src in [info.get("automatic_captions"), info.get("subtitles")] {
+            if let Some(map) = src.and_then(|v| v.as_object()) {
+                if map.contains_key(exp.as_str()) {
+                    return Some(exp);
+                }
+                let exp_tag = primary_subtag(&exp);
+                if let Some(lang) = map.keys().find(|k| k.split('-').next() == Some(exp_tag)) {
+                    return Some(lang.clone());
+                }
+            }
+        }
+    }
 
     // 1) Original-language auto-caption track (its URL has no tlang= param).
-    if let Some(ac) = info.get("automatic_captions").and_then(|v| v.as_object()) {
-        if let Some((lang, _)) = ac.iter().find(|(_, tracks)| {
+    if let Some(ac) = info.get("automatic_captions").and_then(|v| v.as_object())
+        && let Some((lang, _)) = ac.iter().find(|(_, tracks)| {
             tracks
                 .as_array()
                 .and_then(|a| a.first())
@@ -406,15 +438,119 @@ fn pick_caption_language(url: &str) -> Option<String> {
                 .and_then(|u| u.as_str())
                 .map(|u| !u.contains("tlang="))
                 .unwrap_or(false)
-        }) {
-            return Some(lang.clone());
-        }
+        })
+    {
+        return Some(lang.clone());
     }
 
     // 2) Any manual subtitle.
     info.get("subtitles")
         .and_then(|v| v.as_object())
         .and_then(|m| m.keys().next().cloned())
+}
+
+/// The language the audio is actually sung/spoken in, derived from video
+/// metadata. Kana/hangul in the title or description are unambiguous script
+/// signals; the channel's registered country is a weaker proxy (many CJK
+/// artists register in the US), so it only runs when no script was found.
+fn expected_caption_language(info: &Value) -> Option<String> {
+    let mut text = String::new();
+    if let Some(t) = info.get("title").and_then(|v| v.as_str()) {
+        text.push_str(t);
+    }
+    if let Some(d) = info.get("description").and_then(|v| v.as_str()) {
+        text.push(' ');
+        text.push_str(d);
+    }
+
+    let kana = text
+        .chars()
+        .filter(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}'))
+        .count();
+    let hangul = text
+        .chars()
+        .filter(|c| matches!(c, '\u{ac00}'..='\u{d7a3}' | '\u{1100}'..='\u{11ff}'))
+        .count();
+    if kana > 0 || hangul > 0 {
+        return Some(if hangul > kana { "ko" } else { "ja" }.to_string());
+    }
+
+    let channel_id = info.get("channel_id")?.as_str()?;
+    let country = channel_country(channel_id)?;
+    language_for_country(&country)
+}
+
+fn primary_subtag(lang: &str) -> &str {
+    lang.split('-').next().unwrap_or(lang)
+}
+
+/// Map a YouTube about-page country name to the expected CJK language.
+/// Non-CJK countries return None so the old behavior applies.
+fn language_for_country(country: &str) -> Option<String> {
+    let lang = match country.trim() {
+        "Japan" => "ja",
+        "South Korea" | "North Korea" => "ko",
+        "China" => "zh-Hans",
+        "Taiwan" | "Hong Kong" | "Macau" => "zh-Hant",
+        _ => return None,
+    };
+    Some(lang.to_string())
+}
+
+/// Best-effort fetch of the channel's registered country from its about
+/// page. Any failure just means "no signal".
+fn channel_country(channel_id: &str) -> Option<String> {
+    const SCRIPT: &str = r#"
+import re, sys, urllib.request
+req = urllib.request.Request(
+    "https://www.youtube.com/channel/" + sys.argv[1] + "/about?hl=en",
+    headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"},
+)
+html = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "replace")
+m = re.search(r'\"country\":\"([^\"]+)\"', html)
+print(m.group(1) if m else "")
+"#;
+    let python = python_path();
+    if !python.exists() {
+        return None;
+    }
+    let child = match silent_command(&python)
+        .arg("-c")
+        .arg(SCRIPT)
+        .arg(channel_id)
+        .env("PYTHONUTF8", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[yt-import] channel-country helper spawn failed: {e}");
+            return None;
+        }
+    };
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel::<std::io::Result<std::process::Output>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let output = match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(o) => o,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            kill_process_tree(pid);
+            warn!("[yt-import] channel-country helper timed out");
+            return None;
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+    };
+    let Ok(output) = output else { return None };
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let country = stdout.trim().to_string();
+    (!country.is_empty()).then_some(country)
 }
 
 /// Run a short yt-dlp invocation and capture its output, bounded by a timeout.
@@ -546,11 +682,14 @@ pub fn search_youtube(query: &str) -> Result<Vec<YtSearchResult>, String> {
 
 /// Download one video as mp3 into the library folder and rescan so the new
 /// file shows up in the library. Returns the final mp3 path.
+/// `caption_lang` pins the caption track that becomes the lyrics; `None`
+/// lets the importer pick the language that matches the audio.
 pub fn import_youtube(
     input: &str,
+    caption_lang: Option<&str>,
     on_progress: impl FnMut(YtImportProgress),
 ) -> Result<PathBuf, String> {
-    match import_youtube_impl(input, on_progress) {
+    match import_youtube_impl(input, caption_lang, on_progress) {
         Ok(path) => Ok(path),
         Err(error) => {
             // The error also reaches the client as a `yt-import-error` event;
@@ -563,6 +702,7 @@ pub fn import_youtube(
 
 fn import_youtube_impl(
     input: &str,
+    requested_caption: Option<&str>,
     mut on_progress: impl FnMut(YtImportProgress),
 ) -> Result<PathBuf, String> {
     ensure_yt_dlp()?;
@@ -613,12 +753,17 @@ fn import_youtube_impl(
         cmd.arg(arg);
     }
 
-    // Pin the caption track to the language that matches the audio. yt-dlp's
-    // default prefers English, which for non-English songs means a machine
-    // translation of the lyrics - useless for karaoke.
-    if let Some(lang) = pick_caption_language(&url) {
+    // Pin the caption track. An explicit user choice wins; otherwise pick the
+    // language that matches the audio. yt-dlp's own default prefers English,
+    // which for non-English songs means a machine translation of the lyrics -
+    // useless for karaoke.
+    let caption_lang = match requested_caption.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(lang) => Some(lang.to_string()),
+        None => pick_caption_language(&url),
+    };
+    if let Some(ref lang) = caption_lang {
         tracing::info!(lang = %lang, "yt-import: using caption language");
-        cmd.arg("--sub-langs").arg(&lang);
+        cmd.arg("--sub-langs").arg(lang.as_str());
     }
 
     cmd.stdin(Stdio::null())
@@ -653,23 +798,233 @@ fn import_youtube_impl(
         // Subtitle -> LRC handoff runs off the import thread so this command
         // returns promptly; it waits for the scanner's row on its own.
         let path = path.clone();
-        std::thread::spawn(move || attach_subtitles_as_lyrics(&path));
+        std::thread::spawn(move || attach_subtitles_as_lyrics(&path, caption_lang.as_deref()));
     }
 
     result
+}
+
+/// A caption track available for a video, as reported by yt-dlp.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct YtSubLanguage {
+    /// Language code as YouTube reports it, e.g. `ja`, `ko`, `en-US`.
+    pub lang: String,
+    /// Where the track comes from: `"manual"` (uploaded) or `"auto"`
+    /// (machine-generated).
+    pub source: String,
+}
+
+/// List the caption tracks available for a video so the user can pick which
+/// one becomes the lyrics. `input` is a URL or bare video id.
+pub fn youtube_subtitle_languages(input: &str) -> Result<Vec<YtSubLanguage>, String> {
+    let input = input.trim();
+    let is_bare_id = input.len() == 11
+        && input
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let url = if input.starts_with("http") {
+        input.to_string()
+    } else if is_bare_id {
+        format!("https://www.youtube.com/watch?v={input}")
+    } else {
+        return Err("Expected a YouTube link or video id".to_string());
+    };
+
+    let info = fetch_video_info(&url)
+        .ok_or_else(|| "Could not load the video's caption list (check the link)".to_string())?;
+
+    let mut out: Vec<YtSubLanguage> = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(map) = info.get("subtitles").and_then(|v| v.as_object()) {
+        for (lang, _) in map.iter() {
+            if lang == "live_chat" || !seen.insert(lang.clone()) {
+                continue;
+            }
+            out.push(YtSubLanguage {
+                lang: lang.clone(),
+                source: "manual".to_string(),
+            });
+        }
+    }
+    if let Some(map) = info.get("automatic_captions").and_then(|v| v.as_object()) {
+        for (lang, _) in map.iter() {
+            if !seen.insert(lang.clone()) {
+                continue;
+            }
+            out.push(YtSubLanguage {
+                lang: lang.clone(),
+                source: "auto".to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Generate romanized readings for caption lines using the analyzer's CJK
+/// helpers (pykakasi Hepburn for ja, Revised Romanization for ko, pinyin for
+/// zh, Jyutping for yue). Returns one `Option` per line; `None` means no
+/// reading (unsupported language, non-CJK text, or helper failure).
+fn compute_readings(lang: &str, lines: &[String]) -> Vec<Option<String>> {
+    const SCRIPT: &str = r#"
+import sys, json, re
+sys.path.insert(0, sys.argv[1])
+from cjk import reading, _japanese_readings, tokenize_japanese
+# Read stdin as raw bytes: the pipe is not a console, so sys.stdin would
+# decode our UTF-8 payload with the Windows ANSI code page (e.g. cp932) and
+# silently mangle CJK text.
+raw = sys.stdin.buffer.read()
+req = json.loads(raw.decode("utf-8", "replace"))
+lang = req.get("lang") or ""
+out = []
+for line in req.get("lines") or []:
+    r = None
+    if lang == "ja" and re.search(r"[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fff]", line):
+        toks = tokenize_japanese(line)
+        r = " ".join(x for x in _japanese_readings(toks, line) if x).strip() or None
+    elif lang:
+        r = " ".join(p for p in (reading(w, lang) or "" for w in line.split()) if p).strip() or None
+    out.append(r)
+print(json.dumps(out))
+"#;
+    let python = python_path();
+    tracing::info!(
+        path = %python.display(),
+        exists = python.exists(),
+        count = lines.len(),
+        lang,
+        pythonhome = ?std::env::var("PYTHONHOME"),
+        "[yt-import] compute_readings entry"
+    );
+    if !python.exists() || lines.is_empty() {
+        return Vec::new();
+    }
+    let payload = match serde_json::to_vec(&serde_json::json!({ "lang": lang, "lines": lines })) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("[yt-import] reading helper payload failed: {e}");
+            return Vec::new();
+        }
+    };
+    use std::io::Write as _;
+    let mut child = match Command::new(&python)
+        .arg("-c")
+        .arg(SCRIPT)
+        .arg(analyzer_dir())
+        // Force UTF-8 I/O so the payload survives any Windows ANSI code page.
+        .env("PYTHONUTF8", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[yt-import] reading helper spawn failed: {e}");
+            return Vec::new();
+        }
+    };
+    let pid = child.id();
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&payload);
+        let _ = stdin.flush();
+    }
+    // First run loads fugashi/pykakasi, which can take a while.
+    let (tx, rx) = mpsc::channel::<std::io::Result<std::process::Output>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let output = match rx.recv_timeout(Duration::from_secs(180)) {
+        Ok(o) => o,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            kill_process_tree(pid);
+            warn!("[yt-import] reading helper timed out");
+            return Vec::new();
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("[yt-import] reading helper exited unexpectedly");
+            return Vec::new();
+        }
+    };
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("[yt-import] reading helper wait failed: {e}");
+            return Vec::new();
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "[yt-import] reading helper exited {}: {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        );
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    tracing::info!(
+        status_ok = output.status.success(),
+        len = stdout.len(),
+        head = %stdout.trim().chars().take(120).collect::<String>(),
+        "[yt-import] reading helper output"
+    );
+    match serde_json::from_slice::<Vec<Option<String>>>(stdout.trim().as_bytes()) {
+        Ok(readings) => readings,
+        Err(e) => {
+            warn!("[yt-import] reading helper output invalid: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Insert `;reading` lines (one per lyric line that has a reading) into the
+/// LRC text so the readings live in the sidecar and flow through
+/// `provide_lrc` into the transcript, like AI-transcribed CJK songs.
+fn attach_readings(lrc_text: &str, lang: Option<&str>) -> String {
+    let Some(lang) = lang else {
+        return lrc_text.to_string();
+    };
+    // srt_to_lrc output is one `[mm:ss.xx] text` line per caption line.
+    let texts: Vec<String> = lrc_text
+        .lines()
+        .map(|line| {
+            line.split_once(']')
+                .map(|(_, t)| t.trim().to_string())
+                .unwrap_or_default()
+        })
+        .collect();
+    let readings = compute_readings(lang, &texts);
+    let mut out = String::new();
+    for (i, line) in lrc_text.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+        if !texts[i].is_empty()
+            && let Some(Some(reading)) = readings.get(i)
+        {
+            out.push(';');
+            out.push_str(reading);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Turn the subtitle sidecar yt-dlp wrote into an LRC file next to the song,
 /// then hand it to the lyrics pipeline: the transcript is built straight from
 /// the captions (no AI transcription) and a stems-only analysis pass is queued,
 /// so the import is karaoke-ready as soon as separation finishes.
-fn attach_subtitles_as_lyrics(mp3_path: &Path) {
+fn attach_subtitles_as_lyrics(mp3_path: &Path, caption_lang: Option<&str>) {
     let Some(srt_path) = find_subs_sidecar(mp3_path) else {
         return;
     };
 
     let Ok(srt_text) = std::fs::read_to_string(&srt_path) else {
-        warn!("[yt-import] could not read subtitles: {}", srt_path.display());
+        warn!(
+            "[yt-import] could not read subtitles: {}",
+            srt_path.display()
+        );
         return;
     };
 
@@ -678,6 +1033,9 @@ fn attach_subtitles_as_lyrics(mp3_path: &Path) {
         warn!("[yt-import] subtitles contained no usable lines; skipped lyrics");
         return;
     };
+
+    // Romanized readings under each line, like AI-transcribed CJK songs get.
+    let lrc_text = attach_readings(&lrc_text, caption_lang);
 
     // Sidecar next to the song: the editable source of truth for the lyrics UI.
     if let (Some(parent), Some(stem)) = (mp3_path.parent(), mp3_path.file_stem()) {
@@ -699,8 +1057,14 @@ fn attach_subtitles_as_lyrics(mp3_path: &Path) {
     }
 
     match provide_lrc(&song.file_hash, &lrc_text, true) {
-        Ok(()) => tracing::info!("[yt-import] lyrics attached from captions: {}", mp3_path.display()),
-        Err(e) => warn!("[yt-import] lyrics handoff failed for {}: {e}", mp3_path.display()),
+        Ok(()) => tracing::info!(
+            "[yt-import] lyrics attached from captions: {}",
+            mp3_path.display()
+        ),
+        Err(e) => warn!(
+            "[yt-import] lyrics handoff failed for {}: {e}",
+            mp3_path.display()
+        ),
     }
 }
 
@@ -715,7 +1079,10 @@ fn find_subs_sidecar(mp3_path: &Path) -> Option<PathBuf> {
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let path = e.path();
-            if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("srt")) {
+            if !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("srt"))
+            {
                 return None;
             }
             let name = path.file_name()?.to_string_lossy();
@@ -737,13 +1104,12 @@ fn find_subs_sidecar(mp3_path: &Path) -> Option<PathBuf> {
 fn wait_for_song(mp3_path: &Path) -> Option<Song> {
     let canonical = std::fs::canonicalize(mp3_path).unwrap_or_else(|_| mp3_path.to_path_buf());
     for _ in 0..120 {
-        if let Ok(songs) = load_all_songs() {
-            if let Some(song) = songs
+        if let Ok(songs) = load_all_songs()
+            && let Some(song) = songs
                 .into_iter()
                 .find(|s| path_matches(&s.path, &canonical))
-            {
-                return Some(song);
-            }
+        {
+            return Some(song);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -799,7 +1165,11 @@ fn srt_to_lrc(srt_text: &str) -> Option<String> {
         if let Some(start) = cue_start_ms {
             let text = clean_subtitle_text(line);
             if !text.is_empty() && Some(&text) != last_emitted.as_ref() {
-                let ts_ms = if start == last_ts_ms { last_ts_ms + 10 } else { start };
+                let ts_ms = if start == last_ts_ms {
+                    last_ts_ms + 10
+                } else {
+                    start
+                };
                 out.push_str(&format_lrc_timestamp(ts_ms));
                 out.push(' ');
                 out.push_str(&text);
@@ -838,10 +1208,17 @@ fn parse_srt_timestamp(stamp: &str) -> Option<i64> {
     let mut ms: i64 = 0;
     for (idx, d) in digits.enumerate() {
         ms = ms * 10 + d.to_digit(10)? as i64;
-        if idx == 2 { break; }
+        if idx == 2 {
+            break;
+        }
     }
     // Pad short fractions: "9" meant 900ms, "96" meant 960ms.
-    let len = frac.trim().chars().filter(|c| c.is_ascii_digit()).count().min(3);
+    let len = frac
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .count()
+        .min(3);
     for _ in 0..(3 - len) {
         ms *= 10;
     }
@@ -868,10 +1245,7 @@ fn clean_subtitle_text(line: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ");
-    unescaped
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    unescaped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn format_lrc_timestamp(ms: i64) -> String {
@@ -1105,10 +1479,13 @@ woman of class who knows the leisure of a cup of coffee, a woman whose
 
     #[test]
     fn srt_timestamp_parsing() {
-        assert_eq!(parse_srt_time_range("00:01:02,500 --> 00:01:05,000"), Some((62_500, 65_000)));
+        assert_eq!(
+            parse_srt_time_range("00:01:02,500 --> 00:01:05,000"),
+            Some((62_500, 65_000))
+        );
         assert_eq!(
             parse_srt_time_range("01:02:03,45 --> 01:02:04.9"),
-            Some((3723_450, 3724_900))
+            Some((3_723_450, 3_724_900))
         );
     }
 
@@ -1124,5 +1501,18 @@ woman of class who knows the leisure of a cup of coffee, a woman whose
             clean_subtitle_text("<i>hello &amp; <font>world</font></i>"),
             "hello & world"
         );
+    }
+
+    #[test]
+    fn compute_readings_romanizes_korean_lines() {
+        let lines = vec![
+            "오 오".to_string(),
+            "[음악]".to_string(),
+            "hp so i'd rather".to_string(),
+        ];
+        let out = compute_readings("ko", &lines);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].is_some());
+        assert!(out[2].is_none());
     }
 }
