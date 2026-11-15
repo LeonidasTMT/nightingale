@@ -2,7 +2,7 @@
 title: Lyrics & Transcription
 ---
 
-Nightingale provides word-level synchronized lyrics through two sources.
+Nightingale provides word-level synchronized lyrics through three sources.
 
 ## LRCLIB
 
@@ -16,6 +16,10 @@ When LRCLIB doesn't have lyrics for a song, Nightingale runs ASR over the isolat
 2. **Align** each word to precise timestamps
 
 This produces word-level timing information that drives the karaoke highlighting during playback.
+
+## YouTube Captions
+
+Songs imported from YouTube ([Import From YouTube](/docs/youtube-import/)) can use the video's caption track as their lyrics instead of running ASR. The import dialog offers **Auto — match the song language** plus every available track, labeled **uploaded** (human) or **machine** (auto-generated). Word timing comes straight from the caption track, and CJK tracks carry romanized readings under each line just like transcribed songs do.
 
 ## Choosing the ASR Engine
 

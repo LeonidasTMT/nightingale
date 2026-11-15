@@ -166,6 +166,8 @@ The container runs as a non-root `nightingale` user. Mount your music read-only 
 | `NIGHTINGALE_DATA_PATH` | `/data` | Data + config directory (mount this as a volume). Fixed, so the setup wizard skips the data-folder step. |
 | `NIGHTINGALE_LIBRARY_PATH` | `/songs` | Pin the library to a folder at this in-container path (mount your music here). Scanned on startup; the in-app source pickers are hidden while it's set. Set empty to use in-app / remote sources instead. |
 | `NIGHTINGALE_REMOTE_URL` | empty | Base URL phones should scan for [queue control](/docs/queue-from-phone/), e.g. `http://192.168.1.10:64448`. Overrides LAN address detection. Needed when you open the app through `localhost`, because a container cannot see the host address phones should use. |
+| `NIGHTINGALE_YT_COOKIES` | empty | Path to a Netscape-format YouTube cookie file for [Import From YouTube](/docs/youtube-import/); falls back to `/data/yt_cookies.txt` and `/songs/yt_cookies.txt`. |
+| `NIGHTINGALE_YT_BROWSER` | auto-detect | Force an installed browser (`chrome`, `edge:Profile 1`) or disable automatic browser-cookie detection (`off`) for YouTube imports. |
 
 Build-time:
 

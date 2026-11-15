@@ -15,7 +15,8 @@ below.
 
 ### Features
 
-- Added **Add from YouTube** to the sidebar sources: search YouTube and import a song as MP3 into the library folder using the vendored Python/yt-dlp, with progress reported through the UI. When a Netscape `yt_cookies.txt` exists in the data or library folder it is used automatically (also `--cookies-from-browser` fallback), so no QR-code queue is needed.
+- Added **Add from YouTube** to the sidebar sources: search YouTube or paste a link/ID and import the song as MP3 into the library folder using the vendored Python/yt-dlp, with progress reported through the UI. Cover art and metadata are embedded and the artist is auto-filled from the uploader's channel name. The video's caption track can be attached as word-timed lyrics — pick **Auto** or a specific uploaded/machine track in the dialog (CJK tracks get romanized readings under each line) — so imported songs skip ASR entirely. When a Netscape `yt_cookies.txt` exists (`NIGHTINGALE_YT_COOKIES`, the data folder, or the library folder) it is used automatically; otherwise cookies are read from an installed browser that is already logged into YouTube. No QR-code queue needed.
+- Added **Delete** to a song's actions menu: after confirmation the audio file (and any sidecar lyrics) is removed from disk, cached analysis is cleared, and the library entry disappears. Remote-source songs keep their own storage.
 - Added a **Note Highway** vocal trainer to playback: a scrolling target-note highway with your live microphone pitch trace, Joysound-style judgments (PERFECT/GREAT/GOOD/MISS), combo multiplier, running score, and a live grade badge. Octave snapping is anchored to the melody so low male vocals stay in range.
 
 ### Fixes

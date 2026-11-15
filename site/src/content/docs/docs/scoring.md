@@ -2,7 +2,7 @@
 title: Pitch Scoring
 ---
 
-Nightingale includes real-time pitch scoring to gamify the karaoke experience.
+Nightingale includes real-time pitch scoring to gamify the karaoke experience. For a dedicated, game-style practice view built on this scoring, see [Vocal Trainer](/docs/vocal-trainer/).
 
 ## How It Works
 

@@ -74,11 +74,13 @@ export default defineConfig({
           items: [
             { label: "How It Works", slug: "docs/how-it-works" },
             { label: "Library Sources", slug: "docs/library-sources" },
+            { label: "Import From YouTube", slug: "docs/youtube-import" },
             { label: "Stem Separation", slug: "docs/stems" },
             { label: "Lyrics & Transcription", slug: "docs/lyrics" },
             { label: "Song Bundles (.nge)", slug: "docs/song-bundles" },
             { label: "UltraStar Deluxe", slug: "docs/usdx" },
             { label: "Pitch Scoring", slug: "docs/scoring" },
+            { label: "Vocal Trainer", slug: "docs/vocal-trainer" },
             { label: "Multiplayer", slug: "docs/multiplayer" },
             { label: "Backgrounds", slug: "docs/backgrounds" },
             { label: "Queue From Your Phone", slug: "docs/queue-from-phone" },

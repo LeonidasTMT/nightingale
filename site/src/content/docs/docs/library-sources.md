@@ -2,7 +2,7 @@
 title: Library Sources
 ---
 
-Nightingale can build your karaoke library from a local folder, Plex Media Server, Jellyfin, or Navidrome. Use the **Library** buttons in the sidebar to choose one.
+Nightingale can build your karaoke library from a local folder, Plex Media Server, Jellyfin, or Navidrome. Use the **Library** buttons in the sidebar to choose one. You can also import individual songs from YouTube — see [Import From YouTube](/docs/youtube-import/).
 
 Only one source is active at a time. You can switch later without losing already-analyzed songs that point to the same audio.
 

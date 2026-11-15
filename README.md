@@ -30,8 +30,10 @@ Nightingale turns music you already have into karaoke. It can separate lead voca
 ## Highlights
 
 - **Bring your library** — scan local audio, video, and UltraStar files, or connect Plex, Jellyfin, or Navidrome. Existing provider and folder playlists appear as read-only navigation.
+- **Import from YouTube** — search or paste a link to download songs as MP3 into your folder library: cover art and metadata are embedded, the uploader becomes the artist, and the caption track you pick (with language selection) becomes synced lyrics with CJK readings. Sign in with a `yt_cookies.txt` cookie file or an installed browser to clear bot checks.
 - **Prepare tracks locally** — separate vocals with UVR Karaoke or Demucs, then use LRCLIB, local or pasted LRC, or automatic transcription and alignment for lyrics.
 - **Sing your way** — follow synchronized lyrics, score microphone pitch, adjust key and tempo, mix guide vocals, monitor the microphone, and compensate for room latency.
+- **Train on the Note Highway** — a dedicated Joysound-style practice view built on the live pitch scoring: scrolling target notes, glowing mic trace, PERFECT/GREAT/GOOD/MISS judgments, combo multiplier, and a live D–S grade badge.
 - **Run a karaoke night** — build a playback queue, keep managing it during Session mode, switch profiles, compare scoreboards, or assign separate microphones to two to four local players.
 - **Set the stage** — use source video, GPU shaders, Pixabay loops, or custom image, video, and shader backgrounds; reposition and scale lyrics and the pitch graph.
 - **Use the screen you have** — desktop and self-hosted modes share the same karaoke core, with keyboard, gamepad, touch, and layouts ranging from phones to 4K displays.
@@ -54,10 +56,10 @@ See [Getting Started](https://nightingale.cafe/docs/getting-started.html) for se
 
 ## Documentation
 
-- [Library sources](https://nightingale.cafe/docs/library-sources.html)
+- [Library sources](https://nightingale.cafe/docs/library-sources.html) and [Import From YouTube](https://nightingale.cafe/docs/youtube-import.html)
 - [Lyrics and transcription](https://nightingale.cafe/docs/lyrics.html)
 - [Controls](https://nightingale.cafe/docs/controls.html)
-- [Scoring](https://nightingale.cafe/docs/scoring.html) and [multiplayer](https://nightingale.cafe/docs/multiplayer.html)
+- [Scoring](https://nightingale.cafe/docs/scoring.html), [Vocal Trainer](https://nightingale.cafe/docs/vocal-trainer.html) and [multiplayer](https://nightingale.cafe/docs/multiplayer.html)
 - [Backgrounds](https://nightingale.cafe/docs/backgrounds.html)
 - [Self-hosted web mode](https://nightingale.cafe/docs/self-hosted.html) and [Docker](https://nightingale.cafe/docs/docker.html)
 - [Building from source](https://nightingale.cafe/docs/building.html)
@@ -119,6 +121,8 @@ Create a production bundle for the current platform with:
 ```bash
 cargo desktop build
 ```
+
+On Windows, `update.bat` builds the client and server (release) and `run.bat` starts the self-hosted server on `127.0.0.1:64500` with data in `%USERPROFILE%\.nightingale-fork`. Closing the window stops the server.
 
 Before submitting application changes, run the repository checks:
 
