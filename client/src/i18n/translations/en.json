@@ -172,6 +172,7 @@
   "library.songDetails.unknownAlbum": "Unknown album",
   "library.songDetails.unknownBand": "Unknown band",
   "library.songList.highwayBestTooltip": "Note Highway best: {{grade}} · {{points}} pts",
+  "library.songList.highwayAspectLegend": "P·R·S = pitch · rhythm · steady",
   "library.songList.noResults": "No results",
   "library.songList.noResultsDescription": "No songs match your search or filters. Try adjusting them.",
   "library.songList.noSongs": "No songs found",

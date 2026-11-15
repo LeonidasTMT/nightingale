@@ -19,8 +19,12 @@ below.
 - **Refresh metadata** and **Refetch lyrics & align** now work against YouTube for imported songs: refresh pulls the current title, artist, duration, and cover art from the video (the MP3 is left untouched so analysis caches stay valid), refetch re-downloads the caption track, rewrites the sidecar `.lrc` with fresh CJK readings, and re-runs alignment. Same cookie resolution as import.
 - Added **Delete** to a song's actions menu: after confirmation the audio file (and any sidecar lyrics) is removed from disk, cached analysis is cleared, and the library entry disappears. Remote-source songs keep their own storage.
 - Added a **Note Highway** vocal trainer to playback: a scrolling target-note highway with your live microphone pitch trace, Joysound-style judgments (PERFECT/GREAT/GOOD/MISS), combo multiplier, running score, and a live grade badge. Octave snapping is anchored to the melody so low male vocals stay in range.
+- Note Highway now grades you on three aspects under the overall arcade grade: **pitch** (mean accuracy in cents), **rhythm** (onset timing + how much of each note you actually sing) and **steady** (how tightly you hold a pitch). The letters appear live once there is enough sung, are saved with the best run, and show on the library badge as e.g. `B  A·B·S  12,345`.
+- Note Highway judgment rebalanced so above D is achievable for decent singing: PERFECT ≤40¢ (was 25), GREAT ≤70¢ (was 50), GOOD ≤120¢ (was 90), points 300/200/100 (was 300/150/50). A consistently GREAT run caps around B and a PERFECT/GREAT mix reaches A; SSS still demands near-perfect.
 
 ### Fixes
+
+- Note Highway best scores are saved and shown again when no profile is selected: runs now go to a shared no-profile bucket instead of being silently dropped, and the badge in the song list updates live after a finished run (previously nothing was persisted without an active profile).
 
 - Self-hosted/Docker setup no longer fails on Linux: the ffmpeg vendor build now downloads the BtbN GitHub release for linux64/linuxarm64/win64 instead of the johnvansickle static build, which returns anti-bot HTML and breaks extraction.
 - Source action buttons (including Add from YouTube) are shown again when a folder library is pinned (self-hosted/Docker mode).

@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { addHighwayScore } from '@/bridge/profile';
@@ -9,6 +10,7 @@ import {
   usePlaybackTransportState,
   usePlaybackTranscriptState,
 } from '@/features/playback/providers';
+import { PROFILES } from '@/shared/query-keys';
 import type { Melody, MelodyNote } from '@/types/Melody';
 import type { Song } from '@/types/Song';
 
@@ -66,10 +68,20 @@ type MappedNote = {
 };
 
 // Judgment (cents off the target note, octave-folded by snapping).
-const PERFECT_CENTS = 25;
-const GREAT_CENTS = 50;
-const GOOD_CENTS = 90;
+// Judgment windows, tuned so a singer who is in tune but not surgically
+// precise still lands above D: PERFECT is a tight pocket, GREAT covers a
+// stable small offset, GOOD still counts up to a full semitone off.
+const PERFECT_CENTS = 40;
+const GREAT_CENTS = 70;
+const GOOD_CENTS = 120;
 const JUDGE_WINDOW_SEC = 0.35; // sample must be this close to a target note
+
+// Points per judged sample. maxEarnable always assumes PERFECT (300), so a
+// run that is consistently GREAT caps around B and a PERFECT/GREAT mix
+// reaches A — above D is about being in tune, not pixel-perfect.
+const PERFECT_POINTS = 300;
+const GREAT_POINTS = 200;
+const GOOD_POINTS = 100;
 
 const PERFECT_COLOR: Rgb = { r: 1.0, g: 0.85, b: 0.2 };
 const GREAT_COLOR: Rgb = { r: 0.3, g: 0.95, b: 0.4 };
@@ -99,6 +111,13 @@ type GameState = {
   lastComboChangeAt: number;
   popups: Popup[];
   bursts: Burst[];
+  // Multi-aspect grading, accumulated per judged sample:
+  centsAbsSum: number; // sum of |cents| over pitched samples (pitch accuracy)
+  centsN: number; // count of pitched samples
+  noteTotal: number[]; // per note: all samples assigned to it (timing/coverage)
+  noteGood: number[]; // per note: non-miss samples inside [start, end)
+  noteFirstAt: (number | null)[]; // per note: first pitched sample time (onset)
+  noteCents: number[][]; // per note: signed cents of pitched samples (steadiness)
 };
 
 function newGame(songKey: string): GameState {
@@ -116,6 +135,12 @@ function newGame(songKey: string): GameState {
     lastComboChangeAt: -Infinity,
     popups: [],
     bursts: [],
+    centsAbsSum: 0,
+    centsN: 0,
+    noteTotal: [],
+    noteGood: [],
+    noteFirstAt: [],
+    noteCents: [],
   };
 }
 
@@ -212,6 +237,128 @@ function liveGrade(score: number | null): Grade | null {
   return { letter: 'D', color: MISS_COLOR };
 }
 
+// ── Multi-aspect grades ───────────────────────────────────────────────────
+// The arcade grade above is the overall one; these three letters explain
+// WHY: pitch accuracy (mean |cents|), rhythm/timing (onset + coverage) and
+// steadiness (per-note std-dev of signed cents). Each is null until enough
+// data has been sung so the HUD never flashes random letters.
+
+const MIN_PITCH_SAMPLES = 20;
+const MIN_NOTE_SAMPLES = 3; // a note needs this many assigned samples to count
+const MIN_STEADY_SAMPLES = 5; // per-note sample floor for steadiness
+const ONSET_MAX_MS = 400; // onset offset clamped here (full credit at 0ms)
+
+function pitchGradeFrom(meanAbsCents: number | null): string | null {
+  if (meanAbsCents === null) {
+    return null;
+  }
+  if (meanAbsCents <= 30) {
+    return 'S';
+  }
+  if (meanAbsCents <= 45) {
+    return 'A';
+  }
+  if (meanAbsCents <= 70) {
+    return 'B';
+  }
+  if (meanAbsCents <= 100) {
+    return 'C';
+  }
+  return 'D';
+}
+
+function rhythmGradeFrom(score: number | null): string | null {
+  if (score === null) {
+    return null;
+  }
+  if (score >= 0.9) {
+    return 'S';
+  }
+  if (score >= 0.8) {
+    return 'A';
+  }
+  if (score >= 0.65) {
+    return 'B';
+  }
+  if (score >= 0.5) {
+    return 'C';
+  }
+  return 'D';
+}
+
+function steadyGradeFrom(meanStdevCents: number | null): string | null {
+  if (meanStdevCents === null) {
+    return null;
+  }
+  if (meanStdevCents <= 15) {
+    return 'S';
+  }
+  if (meanStdevCents <= 25) {
+    return 'A';
+  }
+  if (meanStdevCents <= 40) {
+    return 'B';
+  }
+  if (meanStdevCents <= 70) {
+    return 'C';
+  }
+  return 'D';
+}
+
+export type AspectGrades = {
+  pitch: string | null;
+  rhythm: string | null;
+  steady: string | null;
+};
+
+/** Per-aspect letter grades from the live game state (null until confident). */
+function rhythmAspectScore(game: GameState, notes: MappedNote[]): number | null {
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < notes.length; i += 1) {
+    const total = game.noteTotal[i] ?? 0;
+    if (total < MIN_NOTE_SAMPLES) {
+      continue;
+    }
+    const firstAt = game.noteFirstAt[i];
+    const onsetOffsetSec =
+      firstAt === null ? ONSET_MAX_MS / 1000 : Math.abs(firstAt - notes[i].start);
+    const onsetScore = Math.max(
+      0,
+      1 - Math.min(onsetOffsetSec, ONSET_MAX_MS / 1000) / (ONSET_MAX_MS / 1000),
+    );
+    const coverage = (game.noteGood[i] ?? 0) / total;
+    sum += 0.5 * onsetScore + 0.5 * coverage;
+    count += 1;
+  }
+  return count > 0 ? sum / count : null;
+}
+
+function steadyAspectScore(game: GameState, notes: MappedNote[]): number | null {
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < notes.length; i += 1) {
+    const list = game.noteCents[i];
+    if (list.length < MIN_STEADY_SAMPLES) {
+      continue;
+    }
+    const mean = list.reduce((a, b) => a + b, 0) / list.length;
+    const variance = list.reduce((a, c) => a + (c - mean) * (c - mean), 0) / list.length;
+    sum += Math.sqrt(variance);
+    count += 1;
+  }
+  return count > 0 ? sum / count : null;
+}
+
+function aspectGrades(game: GameState, notes: MappedNote[]): AspectGrades {
+  const meanAbsCents = game.centsN >= MIN_PITCH_SAMPLES ? game.centsAbsSum / game.centsN : null;
+  return {
+    pitch: pitchGradeFrom(meanAbsCents),
+    rhythm: rhythmGradeFrom(rhythmAspectScore(game, notes)),
+    steady: steadyGradeFrom(steadyAspectScore(game, notes)),
+  };
+}
+
 function mapMelody(
   melody: Melody,
   tempo: number,
@@ -285,6 +432,478 @@ export type NoteHighwayProps = {
   scale?: number | null;
 };
 
+type HighwayEngineArgs = {
+  ctx: CanvasRenderingContext2D;
+  layout: Layout;
+  notes: MappedNote[];
+  songKey: string;
+  scaleF: number;
+  gameRef: { current: GameState | null };
+  savedRef: { current: boolean };
+  seriesRef: { current: PitchSeries };
+  timeFnRef: { current: () => number };
+};
+
+/** Creates the live highway game and render loop. Returns a stop function. */
+function startHighwayGame(args: HighwayEngineArgs): () => void {
+  const { ctx, layout, notes, songKey, scaleF, gameRef, savedRef, seriesRef, timeFnRef } = args;
+  let raf = 0;
+
+  // Identity map note object -> index, for per-note aspect tracking.
+  const noteIndex = new Map(notes.map((n, i): [MappedNote, number] => [n, i]));
+
+  const existing = gameRef.current;
+  const isNewGame = existing === null || existing.songKey !== songKey;
+  const game = isNewGame ? newGame(songKey) : existing;
+  gameRef.current = game;
+  savedRef.current = isNewGame ? false : savedRef.current;
+
+  // Keep the per-note aspect arrays aligned with the melody.
+  while (game.noteTotal.length < notes.length) {
+    game.noteTotal.push(0);
+    game.noteGood.push(0);
+    game.noteFirstAt.push(null);
+    game.noteCents.push([]);
+  }
+
+  const semiPx = layout.plotH / (layout.hi - layout.lo);
+  const fontBase = Math.max(9, 10 * scaleF);
+  const barH = Math.min(Math.max(3, 0.7 * semiPx), 10 * scaleF);
+  const yAt = (midi: number): number =>
+    layout.height - layout.padY - ((midi - layout.lo) / (layout.hi - layout.lo)) * layout.plotH;
+
+  /** Nearest target note in time (previous or upcoming), within window. */
+  const nearestNote = (t: number, windowSec: number): MappedNote | null => {
+    let ptr = 0;
+    while (ptr < notes.length && notes[ptr].end <= t) {
+      ptr += 1;
+    }
+    let best: MappedNote | null = null;
+    let bestDist = Infinity;
+    const candidates: (MappedNote | undefined)[] = [notes[ptr - 1], notes[ptr]];
+    for (const n of candidates) {
+      if (n === undefined) {
+        continue;
+      }
+      let dist = 0;
+      if (t < n.start) {
+        dist = n.start - t;
+      } else if (t > n.end) {
+        dist = t - n.end;
+      }
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = n;
+      }
+    }
+    if (best !== null && bestDist <= windowSec) {
+      return best;
+    }
+    return null;
+  };
+
+  const classifyJ = (cents: number): Judgment | null => {
+    if (cents <= PERFECT_CENTS) {
+      return { text: 'PERFECT!', color: PERFECT_COLOR, points: PERFECT_POINTS };
+    }
+    if (cents <= GREAT_CENTS) {
+      return { text: 'GREAT', color: GREAT_COLOR, points: GREAT_POINTS };
+    }
+    if (cents <= GOOD_CENTS) {
+      return { text: 'GOOD', color: GOOD_COLOR, points: GOOD_POINTS };
+    }
+    return null;
+  };
+
+  const pushPopup = (popup: Popup): void => {
+    game.popups.push(popup);
+  };
+
+  const trackAspects = (info: {
+    noteIdx: number | undefined;
+    target: MappedNote;
+    hz: number | null;
+    signedCents: number | null;
+    t: number;
+    judged: boolean;
+  }): void => {
+    const { noteIdx, target, hz, signedCents, t, judged } = info;
+    if (noteIdx === undefined) {
+      return;
+    }
+    game.noteTotal[noteIdx] += 1;
+    if (hz === null || signedCents === null) {
+      return;
+    }
+    game.centsAbsSum += Math.abs(signedCents);
+    game.centsN += 1;
+    if (game.noteFirstAt[noteIdx] === null) {
+      game.noteFirstAt[noteIdx] = t;
+    }
+    (game.noteCents[noteIdx] ??= []).push(signedCents);
+    if (judged && t >= target.start && t < target.end) {
+      game.noteGood[noteIdx] += 1;
+    }
+  };
+
+  const judgeSample = (hz: number | null, t: number, wallMs: number): void => {
+    const target = nearestNote(t, JUDGE_WINDOW_SEC);
+    if (target === null) {
+      return; // intro/outro: no judgment, no combo change
+    }
+    const noteIdx = noteIndex.get(target);
+    // This sample IS judgeable, so an all-PERFECT run would score on
+    // it too: grow the progressive maximum by exactly that.
+    game.perfectCombo += 1;
+    game.maxEarnable += PERFECT_POINTS * comboMultiplier(game.perfectCombo);
+    if (hz === null) {
+      trackAspects({ noteIdx, target, hz: null, signedCents: null, t, judged: false });
+      // Silence only counts as a miss while inside a note; breaths
+      // before/after phrases are not penalized.
+      if (t < target.start || t > target.end) {
+        return;
+      }
+      game.combo = 0;
+      game.lastComboChangeAt = wallMs;
+      if (wallMs - game.lastMissPopupAt > 500) {
+        game.lastMissPopupAt = wallMs;
+        pushPopup({
+          text: 'MISS',
+          color: MISS_COLOR,
+          t,
+          semi: target.midi,
+          bornAt: wallMs,
+        });
+      }
+      return;
+    }
+    let semi = freqToSemitone(hz);
+    semi = snapToRefOctave(target.midi, semi);
+    const signedCents = 100 * (semi - freqToSemitone(target.hz));
+    const cents = Math.abs(signedCents);
+    const judgment = classifyJ(cents);
+    trackAspects({ noteIdx, target, hz, signedCents, t, judged: judgment !== null });
+    if (judgment !== null) {
+      game.combo += 1;
+      game.score += judgment.points * comboMultiplier(game.combo);
+      // Throttle popups so ~30 samples/sec don't spam the screen.
+      if (wallMs - game.lastJudgePopupAt > 280) {
+        game.lastJudgePopupAt = wallMs;
+        pushPopup({
+          text: judgment.text,
+          color: judgment.color,
+          t,
+          semi: target.midi,
+          bornAt: wallMs,
+        });
+        if (cents <= PERFECT_CENTS) {
+          game.bursts.push({ t, semi: target.midi, bornAt: wallMs });
+        }
+      }
+    } else {
+      game.combo = 0;
+    }
+    game.lastComboChangeAt = wallMs;
+    if (game.combo > game.bestCombo) {
+      game.bestCombo = game.combo;
+    }
+  };
+
+  const processSamples = (now: number, wallMs: number): void => {
+    const userPitches = seriesRef.current.userPitches;
+    const times = seriesRef.current.times;
+    const len = userPitches.length;
+    if (times.length !== len || len === 0) {
+      return;
+    }
+    const newest = times[len - 1];
+    if (newest < game.lastT - 0.5) {
+      // Playback time went backwards (replay / seek): start the game over.
+      game.lastT = -Infinity;
+      game.score = 0;
+      game.shownScore = 0;
+      game.combo = 0;
+      game.bestCombo = 0;
+      game.maxEarnable = 0;
+      game.perfectCombo = 0;
+      game.centsAbsSum = 0;
+      game.centsN = 0;
+      game.noteTotal.length = 0;
+      game.noteGood.length = 0;
+      game.noteFirstAt.length = 0;
+      game.noteCents.length = 0;
+      savedRef.current = false;
+      game.popups.length = 0;
+      game.bursts.length = 0;
+    }
+    for (let i = 0; i < len; i += 1) {
+      const t = times[i];
+      if (t <= game.lastT) {
+        continue;
+      }
+      // Judge only recent samples; older ones are still marked processed.
+      if (now - t <= TRACE_SPAN_SEC + 1) {
+        judgeSample(userPitches[i], t, wallMs);
+      }
+      game.lastT = t;
+    }
+  };
+
+  const drawGrid = (): void => {
+    ctx.font = `${fontBase}px ui-monospace, monospace`;
+    for (let m = Math.ceil(layout.lo); m <= layout.hi; m += 1) {
+      if (((m % 12) + 12) % 12 !== 0) {
+        continue;
+      }
+      const y = yAt(m);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(layout.padX, y);
+      ctx.lineTo(layout.width - layout.padX, y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.fillText(midiToName(m), layout.padX + 2, y - 3);
+    }
+  };
+
+  const drawNotes = (now: number, xAt: (t: number) => number): void => {
+    for (const n of notes) {
+      if (n.end < now - PAST_SEC || n.start > now + FUTURE_SEC) {
+        continue;
+      }
+      const x1 = Math.max(layout.padX, xAt(n.start));
+      const x2 = Math.min(layout.width - layout.padX, xAt(n.end));
+      if (x2 <= x1) {
+        continue;
+      }
+      const y = yAt(n.midi);
+      const isCurrent = now >= n.start && now < n.end;
+      const alpha = noteAlpha(n, now);
+      const h = isCurrent ? barH * 1.6 : barH;
+      ctx.fillStyle = rgba(isCurrent ? CURRENT_NOTE_COLOR : NOTE_COLOR, alpha);
+      if (isCurrent) {
+        ctx.shadowColor = rgba(CURRENT_NOTE_COLOR, 0.9);
+        ctx.shadowBlur = 8 * scaleF;
+      }
+      ctx.beginPath();
+      ctx.roundRect(x1, y - h / 2, x2 - x1, h, h / 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  };
+
+  const drawCurrentLabel = (now: number, xAt: (t: number) => number): void => {
+    const n = notes.find((note) => now >= note.start && now < note.end);
+    if (n === undefined) {
+      return;
+    }
+    const x1 = Math.max(layout.padX, xAt(n.start));
+    const y = yAt(n.midi);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.fillText(midiToName(n.midi), x1 + 4, y - barH * 0.8 - 3);
+  };
+
+  const drawNowLine = (nx: number): void => {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(nx, layout.padY / 2);
+    ctx.lineTo(nx, layout.height - layout.padY / 2);
+    ctx.stroke();
+  };
+
+  const drawBursts = (wallMs: number, xAt: (t: number) => number): void => {
+    game.bursts = game.bursts.filter((b) => wallMs - b.bornAt < 500);
+    for (const b of game.bursts) {
+      const age = (wallMs - b.bornAt) / 500;
+      const x = xAt(b.t);
+      if (x < layout.padX || x > layout.width - layout.padX) {
+        continue;
+      }
+      ctx.strokeStyle = rgba(PERFECT_COLOR, (1 - age) * 0.8);
+      ctx.lineWidth = 2 * scaleF;
+      ctx.beginPath();
+      ctx.arc(x, yAt(b.semi), (4 + 26 * age) * scaleF, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  };
+
+  const collectTracePoints = (now: number, xAt: (t: number) => number): Pt[] => {
+    const pts: Pt[] = [];
+    const userPitches = seriesRef.current.userPitches;
+    const times = seriesRef.current.times;
+    const len = userPitches.length;
+    if (len < 2 || times.length !== len) {
+      return pts;
+    }
+    let prevDisp: number | null = null;
+    for (let i = 0; i < len; i += 1) {
+      const hz = userPitches[i];
+      if (hz === null) {
+        continue;
+      }
+      const t = times[i];
+      if (t < now - TRACE_SPAN_SEC) {
+        continue;
+      }
+      const target = nearestNote(t, SNAP_WINDOW_SEC);
+      const semi = refineSemi(hz, target, prevDisp);
+      prevDisp = semi;
+      const x = xAt(t);
+      if (x < layout.padX) {
+        continue;
+      }
+      const cents = target !== null ? 100 * (semi - freqToSemitone(target.hz)) : 0;
+      pts.push({
+        x,
+        y: yAt(semi),
+        color: target !== null ? centsColor(cents) : TRACE_IDLE,
+      });
+    }
+    return pts;
+  };
+
+  const drawTrace = (pts: Pt[]): void => {
+    if (pts.length < 2) {
+      return;
+    }
+    // Glow pass.
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = rgba(TRACE_IDLE, 0.22);
+    ctx.lineWidth = 6 * scaleF;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i += 1) {
+      ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.stroke();
+    // Colored core pass (segment by segment).
+    ctx.lineWidth = 2.5 * scaleF;
+    for (let i = 1; i < pts.length; i += 1) {
+      ctx.strokeStyle = rgba(pts[i].color, 0.95);
+      ctx.beginPath();
+      ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+      ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+    const tip = pts[pts.length - 1];
+    ctx.fillStyle = rgba(tip.color, 1);
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, 3 * scaleF, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  const drawPopups = (wallMs: number, xAt: (t: number) => number): void => {
+    game.popups = game.popups.filter((p) => wallMs - p.bornAt < 900);
+    for (const p of game.popups) {
+      const age = (wallMs - p.bornAt) / 900;
+      const x = xAt(p.t);
+      if (x < layout.padX || x > layout.width - layout.padX) {
+        continue;
+      }
+      ctx.font = `bold ${Math.max(10, 12 * scaleF)}px ui-monospace, monospace`;
+      ctx.fillStyle = rgba(p.color, 1 - age);
+      ctx.fillText(p.text, x + 4, yAt(p.semi) - 8 - 14 * age * scaleF);
+    }
+  };
+
+  const drawAspectLine = (state: GameState, noteList: MappedNote[]): void => {
+    const aspects = aspectGrades(state, noteList);
+    const aspectParts: string[] = [];
+    if (aspects.pitch !== null) {
+      aspectParts.push(`pitch ${aspects.pitch}`);
+    }
+    if (aspects.rhythm !== null) {
+      aspectParts.push(`rhythm ${aspects.rhythm}`);
+    }
+    if (aspects.steady !== null) {
+      aspectParts.push(`steady ${aspects.steady}`);
+    }
+    if (aspectParts.length === 0) {
+      return;
+    }
+    const aspectText = aspectParts.join('   ');
+    ctx.font = `${Math.max(9, 10 * scaleF)}px ui-monospace, monospace`;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.fillText(
+      aspectText,
+      layout.width - layout.padX - ctx.measureText(aspectText).width,
+      layout.padY + 4 + Math.max(11, 13 * scaleF) + 2,
+    );
+  };
+
+  const drawHud = (now: number, wallMs: number): void => {
+    const currentNote = notes.find((n) => now >= n.start && now < n.end);
+    if (currentNote !== undefined) {
+      ctx.font = `bold ${Math.max(11, 13 * scaleF)}px ui-monospace, monospace`;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.fillText(midiToName(currentNote.midi), layout.padX + 2, layout.padY + 4);
+    }
+
+    game.shownScore += (game.score - game.shownScore) * 0.15;
+    if (Math.abs(game.score - game.shownScore) < 1) {
+      game.shownScore = game.score;
+    }
+    const ratio = game.maxEarnable > 0 ? game.score / game.maxEarnable : null;
+    const grade = liveGrade(ratio);
+    ctx.font = `bold ${Math.max(11, 13 * scaleF)}px ui-monospace, monospace`;
+    const scoreText = `${grade !== null ? grade.letter + '  ' : ''}${Math.floor(game.shownScore).toLocaleString()}`;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.fillText(
+      scoreText,
+      layout.width - layout.padX - ctx.measureText(scoreText).width,
+      layout.padY + 4,
+    );
+
+    drawAspectLine(game, notes);
+
+    if (game.combo > 1) {
+      const sinceChange = wallMs - game.lastComboChangeAt;
+      const pulse = Math.max(0, 1 - sinceChange / 250);
+      const comboFont = `${Math.max(13, 16 * scaleF) * (1 + 0.25 * pulse)}px`;
+      ctx.font = `bold ${comboFont} ui-monospace, monospace`;
+      const comboText = `x${game.combo}`;
+      const mult = comboMultiplier(game.combo);
+      const label = mult > 1 ? `${comboText}  ${mult}x` : comboText;
+      ctx.fillStyle = rgba(mult >= 3 ? PERFECT_COLOR : TRACE_IDLE, 0.95);
+      ctx.fillText(
+        label,
+        layout.width - layout.padX - ctx.measureText(label).width,
+        layout.height - layout.padY / 2,
+      );
+    }
+  };
+
+  const render = (): void => {
+    const now = timeFnRef.current();
+    const wallMs = performance.now();
+    const xAt = (t: number): number =>
+      layout.padX + ((t - (now - PAST_SEC)) / SPAN_SEC) * layout.plotW;
+
+    ctx.clearRect(0, 0, layout.width, layout.height);
+    drawGrid();
+    drawNotes(now, xAt);
+    drawCurrentLabel(now, xAt);
+    drawNowLine(xAt(now));
+    processSamples(now, wallMs);
+    drawBursts(wallMs, xAt);
+    const pts = collectTracePoints(now, xAt);
+    drawTrace(pts);
+    drawPopups(wallMs, xAt);
+    drawHud(now, wallMs);
+  };
+
+  const loop = (): void => {
+    render();
+    raf = requestAnimationFrame(loop);
+  };
+  raf = requestAnimationFrame(loop);
+
+  return () => cancelAnimationFrame(raf);
+}
+
 export function NoteHighway({
   melody,
   song,
@@ -309,12 +928,21 @@ export function NoteHighway({
     timeFnRef.current = getCurrentTime;
   });
 
+  const tempo = song.tempo > 0 ? song.tempo : 1;
+  const keyShift = song.override_key === null ? 0 : song.key_offset;
+
+  const mapped = useMemo(
+    () => (melody ? mapMelody(melody, tempo, keyShift) : null),
+    [melody, tempo, keyShift],
+  );
+
   // Persist the run when the song finishes (or the outro is skipped): the
   // best arcade result per song + active profile, graded against the best
   // score attainable at that moment.
   const { isFinished } = usePlaybackTransportState();
   const { skipOutroPending } = usePlaybackTranscriptState();
   const savedRef = useRef(false);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!isFinished && !skipOutroPending) {
@@ -328,17 +956,18 @@ export function NoteHighway({
     const ratio = game.maxEarnable > 0 ? game.score / game.maxEarnable : 0;
     const grade = liveGrade(ratio);
     if (grade !== null) {
-      void addHighwayScore(song.file_hash, Math.floor(game.score), grade.letter);
+      const aspects = aspectGrades(game, mapped?.notes ?? []);
+      void (async () => {
+        await addHighwayScore(song.file_hash, Math.floor(game.score), grade.letter, {
+          pitch: aspects.pitch ?? '',
+          rhythm: aspects.rhythm ?? '',
+          steady: aspects.steady ?? '',
+        });
+        // Refresh the song list so the best-score badge appears live.
+        void queryClient.invalidateQueries({ queryKey: PROFILES });
+      })();
     }
-  }, [isFinished, skipOutroPending, song.file_hash]);
-
-  const tempo = song.tempo > 0 ? song.tempo : 1;
-  const keyShift = song.override_key === null ? 0 : song.key_offset;
-
-  const mapped = useMemo(
-    () => (melody ? mapMelody(melody, tempo, keyShift) : null),
-    [melody, tempo, keyShift],
-  );
+  }, [isFinished, skipOutroPending, song.file_hash, mapped, queryClient]);
 
   useEffect(() => {
     const onResize = () => setSize({ height: window.innerHeight, width: window.innerWidth });
@@ -347,413 +976,44 @@ export function NoteHighway({
   }, []);
 
   useEffect(() => {
-    let raf = 0;
-
-    if (mapped !== null) {
-      const canvas = canvasRef.current;
-      const ctx = canvas === null ? null : canvas.getContext('2d');
-      if (canvas !== null && ctx !== null) {
-        const layout = computeLayout({
-          windowWidth: size.width,
-          windowHeight: size.height,
-          userScale: clampPlaybackScale(scale),
-          minMidi: mapped.minMidi,
-          maxMidi: mapped.maxMidi,
-        });
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(layout.width * dpr);
-        canvas.height = Math.floor(layout.height * dpr);
-        canvas.style.width = `${layout.width}px`;
-        canvas.style.height = `${layout.height}px`;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        const { notes } = mapped;
-        if (notes.length > 0) {
-          const songKey = `${song.title}|${song.artist}`;
-          const existing = gameRef.current;
-          const isNewGame = existing === null || existing.songKey !== songKey;
-          const game = isNewGame ? newGame(songKey) : existing;
-          gameRef.current = game;
-          savedRef.current = isNewGame ? false : savedRef.current;
-
-          const semiPx = layout.plotH / (layout.hi - layout.lo);
-          const scaleF = clampPlaybackScale(scale);
-          const fontBase = Math.max(9, 10 * scaleF);
-          const barH = Math.min(Math.max(3, 0.7 * semiPx), 10 * scaleF);
-          const yAt = (midi: number): number =>
-            layout.height -
-            layout.padY -
-            ((midi - layout.lo) / (layout.hi - layout.lo)) * layout.plotH;
-
-          /** Nearest target note in time (previous or upcoming), within window. */
-          const nearestNote = (t: number, windowSec: number): MappedNote | null => {
-            let ptr = 0;
-            while (ptr < notes.length && notes[ptr].end <= t) {
-              ptr += 1;
-            }
-            let best: MappedNote | null = null;
-            let bestDist = Infinity;
-            const candidates: (MappedNote | undefined)[] = [notes[ptr - 1], notes[ptr]];
-            for (const n of candidates) {
-              if (n === undefined) {
-                continue;
-              }
-              let dist = 0;
-              if (t < n.start) {
-                dist = n.start - t;
-              } else if (t > n.end) {
-                dist = t - n.end;
-              }
-              if (dist < bestDist) {
-                bestDist = dist;
-                best = n;
-              }
-            }
-            if (best !== null && bestDist <= windowSec) {
-              return best;
-            }
-            return null;
-          };
-
-          const classifyJ = (cents: number): Judgment | null => {
-            if (cents <= PERFECT_CENTS) {
-              return { text: 'PERFECT!', color: PERFECT_COLOR, points: 300 };
-            }
-            if (cents <= GREAT_CENTS) {
-              return { text: 'GREAT', color: GREAT_COLOR, points: 150 };
-            }
-            if (cents <= GOOD_CENTS) {
-              return { text: 'GOOD', color: GOOD_COLOR, points: 50 };
-            }
-            return null;
-          };
-
-          const pushPopup = (popup: Popup): void => {
-            game.popups.push(popup);
-          };
-
-          const judgeSample = (hz: number | null, t: number, wallMs: number): void => {
-            const target = nearestNote(t, JUDGE_WINDOW_SEC);
-            if (target === null) {
-              return; // intro/outro: no judgment, no combo change
-            }
-            // This sample IS judgeable, so an all-PERFECT run would score on
-            // it too: grow the progressive maximum by exactly that.
-            game.perfectCombo += 1;
-            game.maxEarnable += 300 * comboMultiplier(game.perfectCombo);
-            if (hz === null) {
-              // Silence only counts as a miss while inside a note; breaths
-              // before/after phrases are not penalized.
-              if (t < target.start || t > target.end) {
-                return;
-              }
-              game.combo = 0;
-              game.lastComboChangeAt = wallMs;
-              if (wallMs - game.lastMissPopupAt > 500) {
-                game.lastMissPopupAt = wallMs;
-                pushPopup({
-                  text: 'MISS',
-                  color: MISS_COLOR,
-                  t,
-                  semi: target.midi,
-                  bornAt: wallMs,
-                });
-              }
-              return;
-            }
-            let semi = freqToSemitone(hz);
-            semi = snapToRefOctave(target.midi, semi);
-            const cents = Math.abs(100 * (semi - freqToSemitone(target.hz)));
-            const judgment = classifyJ(cents);
-            if (judgment !== null) {
-              game.combo += 1;
-              game.score += judgment.points * comboMultiplier(game.combo);
-              // Throttle popups so ~30 samples/sec don't spam the screen.
-              if (wallMs - game.lastJudgePopupAt > 280) {
-                game.lastJudgePopupAt = wallMs;
-                pushPopup({
-                  text: judgment.text,
-                  color: judgment.color,
-                  t,
-                  semi: target.midi,
-                  bornAt: wallMs,
-                });
-                if (cents <= PERFECT_CENTS) {
-                  game.bursts.push({ t, semi: target.midi, bornAt: wallMs });
-                }
-              }
-            } else {
-              game.combo = 0;
-            }
-            game.lastComboChangeAt = wallMs;
-            if (game.combo > game.bestCombo) {
-              game.bestCombo = game.combo;
-            }
-          };
-
-          const processSamples = (now: number, wallMs: number): void => {
-            const userPitches = seriesRef.current.userPitches;
-            const times = seriesRef.current.times;
-            const len = userPitches.length;
-            if (times.length !== len || len === 0) {
-              return;
-            }
-            const newest = times[len - 1];
-            if (newest < game.lastT - 0.5) {
-              // Playback time went backwards (replay / seek): start the game over.
-              game.lastT = -Infinity;
-              game.score = 0;
-              game.shownScore = 0;
-              game.combo = 0;
-              game.bestCombo = 0;
-              game.maxEarnable = 0;
-              game.perfectCombo = 0;
-              savedRef.current = false;
-              game.popups.length = 0;
-              game.bursts.length = 0;
-            }
-            for (let i = 0; i < len; i += 1) {
-              const t = times[i];
-              if (t <= game.lastT) {
-                continue;
-              }
-              // Judge only recent samples; older ones are still marked processed.
-              if (now - t <= TRACE_SPAN_SEC + 1) {
-                judgeSample(userPitches[i], t, wallMs);
-              }
-              game.lastT = t;
-            }
-          };
-
-          const drawGrid = (): void => {
-            ctx.font = `${fontBase}px ui-monospace, monospace`;
-            for (let m = Math.ceil(layout.lo); m <= layout.hi; m += 1) {
-              if (((m % 12) + 12) % 12 !== 0) {
-                continue;
-              }
-              const y = yAt(m);
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-              ctx.lineWidth = 1;
-              ctx.beginPath();
-              ctx.moveTo(layout.padX, y);
-              ctx.lineTo(layout.width - layout.padX, y);
-              ctx.stroke();
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-              ctx.fillText(midiToName(m), layout.padX + 2, y - 3);
-            }
-          };
-
-          const drawNotes = (now: number, xAt: (t: number) => number): void => {
-            for (const n of notes) {
-              if (n.end < now - PAST_SEC || n.start > now + FUTURE_SEC) {
-                continue;
-              }
-              const x1 = Math.max(layout.padX, xAt(n.start));
-              const x2 = Math.min(layout.width - layout.padX, xAt(n.end));
-              if (x2 <= x1) {
-                continue;
-              }
-              const y = yAt(n.midi);
-              const isCurrent = now >= n.start && now < n.end;
-              const alpha = noteAlpha(n, now);
-              const h = isCurrent ? barH * 1.6 : barH;
-              ctx.fillStyle = rgba(isCurrent ? CURRENT_NOTE_COLOR : NOTE_COLOR, alpha);
-              if (isCurrent) {
-                ctx.shadowColor = rgba(CURRENT_NOTE_COLOR, 0.9);
-                ctx.shadowBlur = 8 * scaleF;
-              }
-              ctx.beginPath();
-              ctx.roundRect(x1, y - h / 2, x2 - x1, h, h / 2);
-              ctx.fill();
-              ctx.shadowBlur = 0;
-            }
-          };
-
-          const drawCurrentLabel = (now: number, xAt: (t: number) => number): void => {
-            const n = notes.find((note) => now >= note.start && now < note.end);
-            if (n === undefined) {
-              return;
-            }
-            const x1 = Math.max(layout.padX, xAt(n.start));
-            const y = yAt(n.midi);
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            ctx.fillText(midiToName(n.midi), x1 + 4, y - barH * 0.8 - 3);
-          };
-
-          const drawNowLine = (nx: number): void => {
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(nx, layout.padY / 2);
-            ctx.lineTo(nx, layout.height - layout.padY / 2);
-            ctx.stroke();
-          };
-
-          const drawBursts = (wallMs: number, xAt: (t: number) => number): void => {
-            game.bursts = game.bursts.filter((b) => wallMs - b.bornAt < 500);
-            for (const b of game.bursts) {
-              const age = (wallMs - b.bornAt) / 500;
-              const x = xAt(b.t);
-              if (x < layout.padX || x > layout.width - layout.padX) {
-                continue;
-              }
-              ctx.strokeStyle = rgba(PERFECT_COLOR, (1 - age) * 0.8);
-              ctx.lineWidth = 2 * scaleF;
-              ctx.beginPath();
-              ctx.arc(x, yAt(b.semi), (4 + 26 * age) * scaleF, 0, Math.PI * 2);
-              ctx.stroke();
-            }
-          };
-
-          const collectTracePoints = (now: number, xAt: (t: number) => number): Pt[] => {
-            const pts: Pt[] = [];
-            const userPitches = seriesRef.current.userPitches;
-            const times = seriesRef.current.times;
-            const len = userPitches.length;
-            if (len < 2 || times.length !== len) {
-              return pts;
-            }
-            let prevDisp: number | null = null;
-            for (let i = 0; i < len; i += 1) {
-              const hz = userPitches[i];
-              if (hz === null) {
-                continue;
-              }
-              const t = times[i];
-              if (t < now - TRACE_SPAN_SEC) {
-                continue;
-              }
-              const target = nearestNote(t, SNAP_WINDOW_SEC);
-              const semi = refineSemi(hz, target, prevDisp);
-              prevDisp = semi;
-              const x = xAt(t);
-              if (x < layout.padX) {
-                continue;
-              }
-              const cents = target !== null ? 100 * (semi - freqToSemitone(target.hz)) : 0;
-              pts.push({
-                x,
-                y: yAt(semi),
-                color: target !== null ? centsColor(cents) : TRACE_IDLE,
-              });
-            }
-            return pts;
-          };
-
-          const drawTrace = (pts: Pt[]): void => {
-            if (pts.length < 2) {
-              return;
-            }
-            // Glow pass.
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            ctx.strokeStyle = rgba(TRACE_IDLE, 0.22);
-            ctx.lineWidth = 6 * scaleF;
-            ctx.beginPath();
-            ctx.moveTo(pts[0].x, pts[0].y);
-            for (let i = 1; i < pts.length; i += 1) {
-              ctx.lineTo(pts[i].x, pts[i].y);
-            }
-            ctx.stroke();
-            // Colored core pass (segment by segment).
-            ctx.lineWidth = 2.5 * scaleF;
-            for (let i = 1; i < pts.length; i += 1) {
-              ctx.strokeStyle = rgba(pts[i].color, 0.95);
-              ctx.beginPath();
-              ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
-              ctx.lineTo(pts[i].x, pts[i].y);
-              ctx.stroke();
-            }
-            const tip = pts[pts.length - 1];
-            ctx.fillStyle = rgba(tip.color, 1);
-            ctx.beginPath();
-            ctx.arc(tip.x, tip.y, 3 * scaleF, 0, Math.PI * 2);
-            ctx.fill();
-          };
-
-          const drawPopups = (wallMs: number, xAt: (t: number) => number): void => {
-            game.popups = game.popups.filter((p) => wallMs - p.bornAt < 900);
-            for (const p of game.popups) {
-              const age = (wallMs - p.bornAt) / 900;
-              const x = xAt(p.t);
-              if (x < layout.padX || x > layout.width - layout.padX) {
-                continue;
-              }
-              ctx.font = `bold ${Math.max(10, 12 * scaleF)}px ui-monospace, monospace`;
-              ctx.fillStyle = rgba(p.color, 1 - age);
-              ctx.fillText(p.text, x + 4, yAt(p.semi) - 8 - 14 * age * scaleF);
-            }
-          };
-
-          const drawHud = (now: number, wallMs: number): void => {
-            const currentNote = notes.find((n) => now >= n.start && now < n.end);
-            if (currentNote !== undefined) {
-              ctx.font = `bold ${Math.max(11, 13 * scaleF)}px ui-monospace, monospace`;
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-              ctx.fillText(midiToName(currentNote.midi), layout.padX + 2, layout.padY + 4);
-            }
-
-            game.shownScore += (game.score - game.shownScore) * 0.15;
-            if (Math.abs(game.score - game.shownScore) < 1) {
-              game.shownScore = game.score;
-            }
-            const ratio = game.maxEarnable > 0 ? game.score / game.maxEarnable : null;
-            const grade = liveGrade(ratio);
-            ctx.font = `bold ${Math.max(11, 13 * scaleF)}px ui-monospace, monospace`;
-            const scoreText = `${grade !== null ? grade.letter + '  ' : ''}${Math.floor(game.shownScore).toLocaleString()}`;
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            ctx.fillText(
-              scoreText,
-              layout.width - layout.padX - ctx.measureText(scoreText).width,
-              layout.padY + 4,
-            );
-
-            if (game.combo > 1) {
-              const sinceChange = wallMs - game.lastComboChangeAt;
-              const pulse = Math.max(0, 1 - sinceChange / 250);
-              const comboFont = `${Math.max(13, 16 * scaleF) * (1 + 0.25 * pulse)}px`;
-              ctx.font = `bold ${comboFont} ui-monospace, monospace`;
-              const comboText = `x${game.combo}`;
-              const mult = comboMultiplier(game.combo);
-              const label = mult > 1 ? `${comboText}  ${mult}x` : comboText;
-              ctx.fillStyle = rgba(mult >= 3 ? PERFECT_COLOR : TRACE_IDLE, 0.95);
-              ctx.fillText(
-                label,
-                layout.width - layout.padX - ctx.measureText(label).width,
-                layout.height - layout.padY / 2,
-              );
-            }
-          };
-
-          const render = (): void => {
-            const now = timeFnRef.current();
-            const wallMs = performance.now();
-            const xAt = (t: number): number =>
-              layout.padX + ((t - (now - PAST_SEC)) / SPAN_SEC) * layout.plotW;
-
-            ctx.clearRect(0, 0, layout.width, layout.height);
-            drawGrid();
-            drawNotes(now, xAt);
-            drawCurrentLabel(now, xAt);
-            drawNowLine(xAt(now));
-            processSamples(now, wallMs);
-            drawBursts(wallMs, xAt);
-            const pts = collectTracePoints(now, xAt);
-            drawTrace(pts);
-            drawPopups(wallMs, xAt);
-            drawHud(now, wallMs);
-          };
-
-          const loop = (): void => {
-            render();
-            raf = requestAnimationFrame(loop);
-          };
-          raf = requestAnimationFrame(loop);
-        }
-      }
+    if (mapped === null) {
+      return undefined;
     }
+    const canvas = canvasRef.current;
+    const ctx = canvas === null ? null : canvas.getContext('2d');
+    if (canvas === null || ctx === null) {
+      return undefined;
+    }
+    const layout = computeLayout({
+      windowWidth: size.width,
+      windowHeight: size.height,
+      userScale: clampPlaybackScale(scale),
+      minMidi: mapped.minMidi,
+      maxMidi: mapped.maxMidi,
+    });
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(layout.width * dpr);
+    canvas.height = Math.floor(layout.height * dpr);
+    canvas.style.width = `${layout.width}px`;
+    canvas.style.height = `${layout.height}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    return () => cancelAnimationFrame(raf);
+    // No melody yet: nothing to judge against.
+    if (mapped.notes.length === 0) {
+      return undefined;
+    }
+    const stop = startHighwayGame({
+      ctx,
+      layout,
+      notes: mapped.notes,
+      songKey: `${song.title}|${song.artist}`,
+      scaleF: clampPlaybackScale(scale),
+      gameRef,
+      savedRef,
+      seriesRef,
+      timeFnRef,
+    });
+    return stop;
   }, [mapped, size, scale, song.title, song.artist]);
 
   if (!melody) {

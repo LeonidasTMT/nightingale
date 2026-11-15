@@ -406,10 +406,24 @@ pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdRes
                 points: u32,
                 grade: String,
                 profile: Option<String>,
+                #[serde(default)]
+                pitch_grade: String,
+                #[serde(default)]
+                rhythm_grade: String,
+                #[serde(default)]
+                steady_grade: String,
             }
             let args: Args = deserialize(payload)?;
             let mut store = ProfileStore::load();
-            store.add_highway_score(&args.song_hash, args.points, args.grade, args.profile.as_deref());
+            store.add_highway_score(
+                &args.song_hash,
+                args.points,
+                args.grade,
+                args.profile.as_deref(),
+                &args.pitch_grade,
+                &args.rhythm_grade,
+                &args.steady_grade,
+            );
             Ok(Value::Null)
         }
 

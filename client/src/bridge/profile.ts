@@ -26,10 +26,24 @@ export const addScore = async (
   return await invoke<void>('add_score', { songHash, score, profile });
 };
 
+export type HighwayAspectGrades = {
+  pitch: string;
+  rhythm: string;
+  steady: string;
+};
+
 export const addHighwayScore = async (
   songHash: string,
   points: number,
   grade: string,
+  aspects?: HighwayAspectGrades,
 ): Promise<void> => {
-  return await invoke<void>('add_highway_score', { songHash, points, grade });
+  return await invoke<void>('add_highway_score', {
+    songHash,
+    points,
+    grade,
+    pitchGrade: aspects?.pitch ?? '',
+    rhythmGrade: aspects?.rhythm ?? '',
+    steadyGrade: aspects?.steady ?? '',
+  });
 };

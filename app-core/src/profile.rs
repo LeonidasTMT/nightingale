@@ -13,7 +13,8 @@ pub struct ScoreRecord {
 }
 
 /// One Note Highway (vocal trainer) run: arcade points plus the letter
-/// grade computed against the best score attainable by that moment.
+/// grade computed against the best score attainable by that moment, plus
+/// per-aspect letter grades (pitch accuracy, rhythm/timing, pitch steadiness).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct HighwayScoreRecord {
@@ -21,6 +22,12 @@ pub struct HighwayScoreRecord {
     pub song_hash: String,
     pub points: u32,
     pub grade: String,
+    #[serde(default)]
+    pub pitch_grade: String,
+    #[serde(default)]
+    pub rhythm_grade: String,
+    #[serde(default)]
+    pub steady_grade: String,
     pub played_at: u64,
 }
 
@@ -93,12 +100,22 @@ impl ProfileStore {
         self.save();
     }
 
-    pub fn add_score(&mut self, song_hash: &str, score: u32, profile: Option<&str>) {
-        let profile = match profile.or(self.active.as_deref()) {
+    /// Resolve the bucket a score belongs to. An explicit/active profile wins;
+    /// when no profiles exist at all (single-user setups that never created
+    /// any), scores are kept in the `""` bucket instead of being dropped.
+    fn resolve_score_profile(&self, profile: Option<&str>) -> Option<String> {
+        match profile.or(self.active.as_deref()) {
             Some(profile) if self.profiles.iter().any(|candidate| candidate == profile) => {
-                profile.to_string()
+                Some(profile.to_string())
             }
-            _ => return,
+            _ if self.profiles.is_empty() => Some(String::new()),
+            _ => None,
+        }
+    }
+
+    pub fn add_score(&mut self, song_hash: &str, score: u32, profile: Option<&str>) {
+        let Some(profile) = self.resolve_score_profile(profile) else {
+            return;
         };
         let played_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -119,12 +136,12 @@ impl ProfileStore {
         points: u32,
         grade: String,
         profile: Option<&str>,
+        pitch_grade: &str,
+        rhythm_grade: &str,
+        steady_grade: &str,
     ) {
-        let profile = match profile.or(self.active.as_deref()) {
-            Some(profile) if self.profiles.iter().any(|candidate| candidate == profile) => {
-                profile.to_string()
-            }
-            _ => return,
+        let Some(profile) = self.resolve_score_profile(profile) else {
+            return;
         };
         let played_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -135,6 +152,9 @@ impl ProfileStore {
             song_hash: song_hash.to_string(),
             points,
             grade,
+            pitch_grade: pitch_grade.to_string(),
+            rhythm_grade: rhythm_grade.to_string(),
+            steady_grade: steady_grade.to_string(),
             played_at,
         });
         self.save();

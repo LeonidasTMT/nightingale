@@ -9,12 +9,11 @@ export function useBestScoresBySongForActiveProfile(): Map<string, number> {
 
   return useMemo(() => {
     const map = new Map<string, number>();
-    if (typeof active !== 'string' || active === '') {
-      return map;
-    }
+    // `""` = the no-profile bucket (see ProfileStore::resolve_score_profile).
+    const activeName = typeof active === 'string' && active !== '' ? active : '';
 
     for (const r of scores ?? []) {
-      if (r.profile !== active) {
+      if (r.profile !== activeName) {
         continue;
       }
 
