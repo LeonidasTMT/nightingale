@@ -18,11 +18,12 @@ use tracing::warn;
 use ts_rs::TS;
 
 use crate::{
+    cache::CacheDir,
     config::{AppConfig, LibrarySource},
     library_db::load_all_songs,
-    lyrics::provide_lrc,
+    lyrics::{provide_lrc, write_lyrics_file},
     scanner::start_scan,
-    song::Song,
+    song::{Song, SongOrigin},
     vendor::{analyzer_dir, ffmpeg_path, python_path, silent_command, uv_path},
 };
 
@@ -587,6 +588,14 @@ print(m.group(1) if m else "")
 /// Run a short yt-dlp invocation and capture its output, bounded by a timeout.
 fn run_yt_dlp_capture(args: &[&str], timeout: Duration) -> Result<std::process::Output, String> {
     let mut cmd = silent_command(python_path());
+    // yt-dlp shells out to ffmpeg (subtitle conversion at least); make sure
+    // it finds the vendored one, same as the import does.
+    let ffmpeg = ffmpeg_path();
+    if let (Some(parent), Some(existing)) = (ffmpeg.parent(), std::env::var_os("PATH")) {
+        let mut paths = std::env::split_paths(&existing).collect::<Vec<_>>();
+        paths.insert(0, parent.to_path_buf());
+        cmd.env("PATH", std::env::join_paths(paths).unwrap_or(existing));
+    }
     cmd.arg("-m")
         .arg("yt_dlp")
         .args(args)
@@ -891,6 +900,251 @@ pub fn youtube_subtitle_languages(input: &str) -> Result<Vec<YtSubLanguage>, Str
         }
     }
     Ok(out)
+}
+
+/// Extract a YouTube video id from a library path. Imported files are named
+/// by yt-dlp's output template as `<title> [<id>].mp3`, and that bracketed id
+/// is the only persisted record of where the song came from — the DB row
+/// itself knows nothing about YouTube. Returns None for anything that does
+/// not look like an import, so callers can fall back to their normal path.
+pub(crate) fn video_id_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let mut start = 0;
+    while let Some(rel) = name[start..].find('[') {
+        let open = start + rel + 1;
+        let Some(close_rel) = name[open..].find(']') else {
+            break;
+        };
+        let close = open + close_rel;
+        let candidate = &name[open..close];
+        if candidate.len() == 11
+            && candidate
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Some(candidate.to_string());
+        }
+        start = close + 1;
+    }
+    None
+}
+
+/// Re-pull the caption track of a song that was imported from YouTube and
+/// rebuild its lyrics from it, returning a lyrics JSON path in exactly the
+/// same shape as `fetch_lrclib_lyrics` — this is what "Refetch lyrics &
+/// align" uses for such songs before falling back to LRCLIB. The caption
+/// text also replaces the sidecar `.lrc` next to the audio (the editable
+/// source of truth for the lyrics UI), with romanized readings attached as
+/// at import time.
+///
+/// When a caption language was resolved and the row had none, `song.language`
+/// is filled in so the worker gets a proper alignment hint. Returns None
+/// when the song has no YouTube provenance in its filename or any step
+/// fails; callers then keep their normal lyrics path.
+pub(crate) fn fetch_yt_lyrics(song: &mut Song, cache: &CacheDir) -> Option<PathBuf> {
+    let video_id = video_id_from_path(&song.path)?;
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+
+    // Same language choice as the original import: a known song language
+    // wins, otherwise derive it from the video (script in title/description,
+    // then channel country).
+    let lang = match song.language.clone().filter(|l| !l.is_empty() && l.as_str() != "unknown") {
+        Some(l) => Some(l),
+        None => pick_caption_language(&url),
+    };
+
+    // Download just the caption track into a scratch dir (no audio). The dir
+    // is wiped first so a .srt left over by an earlier failed run can never
+    // be mistaken for this one.
+    let tmp = std::env::temp_dir().join(format!("nightingale-yt-{}", song.file_hash));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).ok()?;
+
+    let mut args: Vec<String> = vec![
+        url,
+        "--no-playlist".into(),
+        "--skip-download".into(),
+        "--write-subs".into(),
+        "--write-auto-subs".into(),
+        "--convert-subs".into(),
+        "srt".into(),
+        "-o".into(),
+        format!("{}/cap", tmp.display()),
+    ];
+    if let Some(l) = &lang {
+        args.push("--sub-langs".into());
+        args.push(l.clone());
+    }
+    args.extend(yt_cookies_args());
+    let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let out = match run_yt_dlp_capture(&args_refs, Duration::from_secs(300)) {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("[yt-import] caption refetch failed for video {video_id}: {e}");
+            return None;
+        }
+    };
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = stderr.lines().collect();
+        let start = tail.len().saturating_sub(3);
+        tracing::warn!(
+            "[yt-import] caption refetch failed for video {video_id}: {}",
+            tail[start..].join(" | ")
+        );
+        return None;
+    }
+
+    // yt-dlp names the converted track `<stem>.<lang>.srt` next to -o.
+    let srt_path = match std::fs::read_dir(&tmp)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|ext| ext == "srt"))
+    {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                "[yt-import] no caption track found for video {video_id} (language {lang:?})"
+            );
+            return None;
+        }
+    };
+
+    let Ok(srt_text) = std::fs::read_to_string(&srt_path) else {
+        tracing::warn!("[yt-import] could not read refetched captions: {}", srt_path.display());
+        return None;
+    };
+    let Some(lrc_plain) = srt_to_lrc(&srt_text) else {
+        tracing::warn!("[yt-import] refetched captions contained no usable lines for {video_id}");
+        return None;
+    };
+
+    // Romanized readings under each line, exactly as at import time.
+    let lrc_final = attach_readings(&lrc_plain, lang.as_deref());
+
+    // Sidecar next to the song: the editable source of truth for the lyrics UI.
+    if let (Some(parent), Some(stem)) = (song.path.parent(), song.path.file_stem()) {
+        let _ = std::fs::write(
+            parent.join(format!("{}.lrc", stem.to_string_lossy())),
+            &lrc_final,
+        );
+    }
+
+    // Plain sung lines for the worker, which aligns them to the audio.
+    let lines: Vec<String> = lrc_plain
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let end = line.find(']')?;
+            let text = line[end + 1..].trim();
+            (!text.is_empty()).then_some(text.to_string())
+        })
+        .collect();
+    if lines.len() < 2 {
+        tracing::warn!("[yt-import] refetched captions produced too few lines for {video_id}");
+        return None;
+    }
+
+    let Some(out_path) = write_lyrics_file(cache, &song.file_hash, &lines).ok() else {
+        tracing::warn!("[yt-import] failed to write refetched lyrics for {video_id}");
+        return None;
+    };
+
+    if song.language
+        .as_ref()
+        .filter(|l| !l.is_empty() && l.as_str() != "unknown")
+        .is_none()
+        && let Some(l) = lang
+    {
+        song.language = Some(l);
+    }
+
+    tracing::info!("[yt-import] refetched lyrics from captions for video {video_id}");
+    Some(out_path)
+}
+
+/// Refresh title/artist/duration/cover for a YouTube-imported song straight
+/// from the video, so "Refresh metadata" tracks upstream renames and new
+/// cover art. Returns true when the song is a YouTube import and the fetch
+/// succeeded (callers must not fall back to file tags); false otherwise, in
+/// which case callers keep their normal path.
+///
+/// The mp3's own ID3 tags are deliberately left alone: rewriting them would
+/// change the file hash and invalidate every analysis cache for the song.
+pub(crate) fn refresh_yt_metadata(song: &mut Song, cache: &CacheDir) -> bool {
+    if !matches!(song.origin, SongOrigin::LocalFile) {
+        return false;
+    }
+    let Some(video_id) = video_id_from_path(&song.path) else {
+        return false;
+    };
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let info = match fetch_video_info(&url) {
+        Some(v) => v,
+        None => {
+            tracing::warn!(
+                "[yt-import] metadata refresh: could not load video {video_id}; keeping file tags"
+            );
+            return false;
+        }
+    };
+
+    if let Some(title) = info.get("title").and_then(Value::as_str)
+        && !title.is_empty()
+    {
+        song.title = title.to_string();
+    }
+    let artist = info
+        .get("uploader")
+        .or_else(|| info.get("channel"))
+        .and_then(Value::as_str);
+    if let Some(artist) = artist
+        && !artist.is_empty()
+    {
+        song.artist = artist.to_string();
+    }
+    if let Some(duration) = info.get("duration").and_then(Value::as_f64)
+        && duration > 0.0
+    {
+        song.duration_secs = duration;
+    }
+    if let Some(thumbnail) = info.get("thumbnail").and_then(Value::as_str) {
+        match download_cover_bytes(thumbnail) {
+            Ok(bytes) => {
+                // Content-addressed like every other cover, so a refresh after
+                // the cached file was deleted re-materializes it and an
+                // unchanged thumbnail is a no-op write.
+                let cover_hash = blake3::hash(&bytes).to_hex()[..32].to_string();
+                let cover_path = cache.cover_path(&cover_hash);
+                if !cover_path.exists() {
+                    let _ = std::fs::write(&cover_path, &bytes);
+                }
+                song.album_art_path = Some(cover_path);
+            }
+            Err(e) => tracing::warn!("[yt-import] metadata refresh: cover download failed: {e}"),
+        }
+    }
+
+    tracing::info!("[yt-import] metadata refreshed from video {video_id}");
+    true
+}
+
+fn download_cover_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let agent = ureq::Agent::new_with_defaults();
+    let resp = agent
+        .get(url)
+        .header("User-Agent", "Nightingale/1.0")
+        .call()
+        .map_err(|e| e.to_string())?;
+    let bytes = resp.into_body().read_to_vec().map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("empty cover".to_string());
+    }
+    Ok(bytes)
 }
 
 /// Generate romanized readings for caption lines using the analyzer's CJK
@@ -1545,5 +1799,28 @@ woman of class who knows the leisure of a cup of coffee, a woman whose
         assert_eq!(out.len(), 3);
         assert!(out[0].is_some());
         assert!(out[2].is_none());
+    }
+
+    #[test]
+    fn video_id_from_path_finds_import_name() {
+        let p = Path::new("C:\\songs\\Artist - Song [dQw4w9WgXcQ].mp3");
+        assert_eq!(video_id_from_path(p), Some("dQw4w9WgXcQ".to_string()));
+    }
+
+    #[test]
+    fn video_id_from_path_accepts_dash_and_underscore() {
+        let p = Path::new("a - b [abcDEF-_123].mp3");
+        assert_eq!(video_id_from_path(p), Some("abcDEF-_123".to_string()));
+    }
+
+    #[test]
+    fn video_id_from_path_rejects_non_imports() {
+        assert_eq!(video_id_from_path(Path::new("song.mp3")), None);
+        // Too short / too long bracketed ids are not YouTube ids.
+        assert_eq!(video_id_from_path(Path::new("song [short].mp3")), None);
+        assert_eq!(
+            video_id_from_path(Path::new("song [1234567890ab].mp3")),
+            None
+        );
     }
 }

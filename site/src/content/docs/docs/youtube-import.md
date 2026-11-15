@@ -20,6 +20,15 @@ The confirm screen has a **Captions (used as lyrics)** dropdown:
 
 The chosen track is attached as word-timed lyrics, so the song needs no ASR pass — and CJK tracks get romanized readings under every line (Japanese romaji, Korean Revised Romanization), the same reading system Nightingale uses for transcribed songs. If a video has no captions the import still works; you can add lyrics afterwards via **Provide LRC** / **Edit lyrics** ([Lyrics & Transcription](/docs/lyrics/)).
 
+## Refreshing an imported song
+
+Imported files keep their source video ID in the filename (`… [VIDEO_ID].mp3`), so Nightingale knows which songs came from YouTube and can maintain them against the live video:
+
+- **Refresh metadata** (in a song's actions menu) re-fetches the video info and updates title, artist (the uploader's channel name), duration, and cover art — useful after an uploader renames a video or swaps its thumbnail. The MP3 itself is left untouched, so existing analyses stay valid.
+- **Refetch lyrics & align** re-downloads the caption track through yt-dlp (picking up caption edits made on YouTube's side), rewrites the sidecar `.lrc` next to the MP3 with fresh romanized readings attached, and runs the normal alignment pass over it.
+
+Both use the same cookie resolution as import, so age-restricted videos can be refreshed while signed in. If a refresh fails (network trouble, captions removed), the song simply keeps its current metadata or lyrics — nothing is lost.
+
 ## Signing in with YouTube cookies
 
 Many videos work without any sign-in, but YouTube asks *"Sign in to confirm you're not a bot"* for server and datacenter addresses (including most self-hosted/Docker setups) or after heavy use, and age-restricted videos require a logged-in session. When that happens, the import dialog tells you to add cookies.

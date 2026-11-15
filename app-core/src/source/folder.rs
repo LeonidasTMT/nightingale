@@ -106,6 +106,12 @@ impl MediaSource for FolderSource {
                 "folder source asked to refresh a remote song".into(),
             ));
         }
+        // YouTube imports remember their video id in the filename: refresh from
+        // the video itself so title/uploader/cover track upstream changes.
+        // Any failure (or non-import) falls through to the file tags below.
+        if crate::yt_import::refresh_yt_metadata(song, cache) {
+            return Ok(());
+        }
         song.refresh_metadata(cache)
     }
 

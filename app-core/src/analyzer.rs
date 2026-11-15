@@ -901,7 +901,7 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
         return;
     };
 
-    let (song, local_path, file_hash_owned) = match prepare_audio_for_analysis(&song, cache) {
+    let (mut song, local_path, file_hash_owned) = match prepare_audio_for_analysis(&song, cache) {
         Ok(out) => out,
         Err(e) => {
             if !discard_cancelled_job(initial_hash, initial_hash) {
@@ -948,7 +948,11 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
     let lyrics_path = if skip_lrclib {
         None
     } else {
-        fetch_lrclib_lyrics(&song, cache)
+        // YouTube imports re-pull their caption track before anything else: it
+        // is the source of truth for these songs, and LRCLIB would only find
+        // the karaoke cover (or nothing at all).
+        crate::yt_import::fetch_yt_lyrics(&mut song, cache)
+            .or_else(|| fetch_lrclib_lyrics(&song, cache))
     };
 
     let mut cmd_json = serde_json::json!({
