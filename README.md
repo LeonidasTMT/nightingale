@@ -7,25 +7,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rzru/nightingale/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/rzru/nightingale/release.yml?style=flat-square&label=build"></a>
-  <a href="https://hub.docker.com/r/razzaru/nightingale"><img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/razzaru/nightingale?style=flat-square&logo=docker&logoColor=white&label=docker%20pulls"></a>
-  <a href="https://github.com/rzru/nightingale/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/rzru/nightingale?style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square"></a>
-  <a href="https://www.patreon.com/cw/nightingalekaraoke"><img alt="Patreon" src="https://img.shields.io/badge/Patreon-Support-FF424D?style=flat-square&logo=patreon&logoColor=white"></a>
-  <a href="https://ko-fi.com/nightingalekaraoke"><img alt="Ko-fi" src="https://img.shields.io/badge/Ko--fi-Buy_a_coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white"></a>
 </p>
 
 <p align="center">
-  <a href="https://nightingale.cafe/">Website</a> ·
-  <a href="https://github.com/rzru/nightingale/releases/latest">Downloads</a> ·
-  <a href="https://nightingale.cafe/docs/">Documentation</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
-  <a href="https://discord.gg/68Vgng9vYp">Discord</a>
+  <a href="https://nightingale.cafe/docs/">User guide</a>
 </p>
 
 ---
 
-Nightingale turns music you already have into karaoke. It can separate lead vocals, find or produce word-timed lyrics, and play tracks with synchronized highlighting, pitch scoring, key and tempo controls, multiplayer, and dynamic backgrounds. Use the native desktop app on Linux, macOS, or Windows, or run the same experience as a self-hosted web app.
+Nightingale turns music you already have into karaoke. It can separate lead vocals, find or produce word-timed lyrics, and play tracks with synchronized highlighting, pitch scoring, key and tempo controls, multiplayer, and dynamic backgrounds. This fork runs it as a self-hosted Windows web app: one batch file starts the server, your browser is the client.
 
 ## Highlights
 
@@ -36,23 +28,27 @@ Nightingale turns music you already have into karaoke. It can separate lead voca
 - **Train on the Note Highway** — a dedicated Joysound-style practice view built on the live pitch scoring: scrolling target notes, glowing mic trace, PERFECT/GREAT/GOOD/MISS judgments, combo multiplier, and a live D–S grade badge.
 - **Run a karaoke night** — build a playback queue, keep managing it during Session mode, switch profiles, compare scoreboards, or assign separate microphones to two to four local players.
 - **Set the stage** — use source video, GPU shaders, Pixabay loops, or custom image, video, and shader backgrounds; reposition and scale lyrics and the pitch graph.
-- **Use the screen you have** — desktop and self-hosted modes share the same karaoke core, with keyboard, gamepad, touch, and layouts ranging from phones to 4K displays.
+- **Use the screen you have** — keyboard, gamepad, touch, and layouts ranging from phones to 4K displays.
 
 Detailed behavior, supported media formats, controls, analyzer options, and current limitations live in the [user guide](https://nightingale.cafe/docs/).
 
-## Get Nightingale
+## Run it (Windows)
 
-| Mode | Start here |
-| --- | --- |
-| Desktop | [Download the latest release](https://github.com/rzru/nightingale/releases/latest) |
-| Self-hosted Linux | [Installation guide](https://nightingale.cafe/docs/self-hosted.html) |
-| Docker | [CPU and CUDA images](https://nightingale.cafe/docs/docker.html) |
+The only supported setup is `run.bat` — no Docker, no desktop app, no system dependencies.
 
-Desktop releases support Linux x86_64/aarch64, macOS Apple Silicon/Intel, and Windows x86_64. Self-hosted release binaries support Linux x86_64/aarch64.
+```bat
+git clone https://github.com/LeonidasTMT/nightingale.git
+cd nightingale
+update.bat   :: build client + server (release)
+run.bat      :: start the server on http://127.0.0.1:64500
+```
 
-First launch prepares an isolated copy of ffmpeg, Python, the analyzer packages, and required ML models. No system Python setup is needed, but the initial download is several gigabytes. GPU acceleration is optional; analysis falls back to CPU when CUDA or Apple Silicon acceleration is unavailable.
+Then open `http://127.0.0.1:64500`.
 
-See [Getting Started](https://nightingale.cafe/docs/getting-started.html) for setup, platform-specific notes, updates, and adding music. For failures, check [Troubleshooting](https://nightingale.cafe/docs/troubleshooting.html).
+- All data lives in `%USERPROFILE%\.nightingale-fork` — library database, profiles, scores, vendored tools, and `yt_cookies.txt`. Nothing is written outside the repository except that folder and the build output in `target/`.
+- First launch prepares an isolated copy of ffmpeg, Python, the analyzer packages, and required ML models. No system Python setup is needed, but the initial download is several gigabytes.
+- GPU acceleration is optional; analysis falls back to CPU when CUDA is unavailable.
+- Closing the console window stops the server. To update, close the window, `git pull`, run `update.bat` again.
 
 ## Documentation
 
@@ -61,8 +57,6 @@ See [Getting Started](https://nightingale.cafe/docs/getting-started.html) for se
 - [Controls](https://nightingale.cafe/docs/controls.html)
 - [Scoring](https://nightingale.cafe/docs/scoring.html), [Vocal Trainer](https://nightingale.cafe/docs/vocal-trainer.html) and [multiplayer](https://nightingale.cafe/docs/multiplayer.html)
 - [Backgrounds](https://nightingale.cafe/docs/backgrounds.html)
-- [Self-hosted web mode](https://nightingale.cafe/docs/self-hosted.html) and [Docker](https://nightingale.cafe/docs/docker.html)
-- [Building from source](https://nightingale.cafe/docs/building.html)
 
 ## Architecture
 
@@ -105,52 +99,14 @@ The analyzer runs as a persistent local process over token-authenticated loopbac
 | Node.js | 22.12 or newer |
 | pnpm | 11.2.2 |
 
-Platform build packages, including Windows ASIO and Linux WebKit requirements, are listed in the [building guide](https://nightingale.cafe/docs/building.html).
+`update.bat` builds the client and server (release) using those tools, and `run.bat` starts the self-hosted server on `127.0.0.1:64500` with data in `%USERPROFILE%\.nightingale-fork`.
 
-### Run the desktop app
-
-```bash
-git clone https://github.com/rzru/nightingale.git
-cd nightingale
-pnpm --dir client install --frozen-lockfile
-cargo desktop dev
-```
-
-Create a production bundle for the current platform with:
-
-```bash
-cargo desktop build
-```
-
-On Windows, `update.bat` builds the client and server (release) and `run.bat` starts the self-hosted server on `127.0.0.1:64500` with data in `%USERPROFILE%\.nightingale-fork`. Closing the window stops the server.
-
-Before submitting application changes, run the repository checks:
+Before submitting changes, run the repository checks:
 
 ```bash
 pnpm --dir client format
 pnpm --dir client quality
 ```
-
-Website and guide tooling runs separately from `site/`; use `pnpm --dir site build` to validate those changes.
-
-## Contributing
-
-Nightingale follows a discussion-first workflow. Before implementing a feature or behavior change, open a [GitHub Discussion](https://github.com/rzru/nightingale/discussions) and wait for it to be approved. Small documentation corrections and obvious bug fixes can go directly to a pull request. Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting.
-
-## Releasing
-
-Tags matching `v*` trigger [the release workflow](.github/workflows/release.yml). It verifies the tag against the desktop manifests, extracts release notes from [CHANGELOG.md](CHANGELOG.md), and creates a draft containing desktop installers, updater artifacts, and self-hosted server archives. Smoke-test the draft artifacts, then publish the release through GitHub.
-
-```bash
-git tag v<version>
-git push origin v<version>
-```
-
-The workflow and its helper scripts are the canonical source for artifact and signing details.
-
-## Support the project
-
-Nightingale is free, open source, and maintained in spare time. Support ongoing development through [Patreon](https://www.patreon.com/cw/nightingalekaraoke) or [Ko-fi](https://ko-fi.com/nightingalekaraoke).
 
 ## License
 
